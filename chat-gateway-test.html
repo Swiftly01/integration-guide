@@ -1,0 +1,948 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Chat Gateway Tester</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.5/socket.io.min.js"></script>
+    <style>
+      *,
+      *::before,
+      *::after {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+
+      :root {
+        --bg: #0f1117;
+        --surface: #1a1d27;
+        --surface2: #22263a;
+        --border: #2e3350;
+        --accent-a: #6c8cff;
+        --accent-b: #ff6ca8;
+        --text: #e8eaf6;
+        --muted: #7b82a8;
+        --success: #4caf50;
+        --warning: #ffa726;
+        --error: #ef5350;
+        --radius: 10px;
+        --font: "Segoe UI", system-ui, sans-serif;
+      }
+
+      body {
+        background: var(--bg);
+        color: var(--text);
+        font-family: var(--font);
+        font-size: 14px;
+        min-height: 100vh;
+        display: flex;
+        flex-direction: column;
+      }
+
+      header {
+        padding: 16px 24px;
+        border-bottom: 1px solid var(--border);
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        background: var(--surface);
+      }
+
+      header h1 {
+        font-size: 15px;
+        font-weight: 600;
+        letter-spacing: 0.04em;
+        color: var(--text);
+      }
+
+      header .badge {
+        font-size: 11px;
+        padding: 2px 8px;
+        border-radius: 20px;
+        background: var(--surface2);
+        color: var(--muted);
+        border: 1px solid var(--border);
+      }
+
+      .server-bar {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 12px 24px;
+        background: var(--surface);
+        border-bottom: 1px solid var(--border);
+      }
+
+      .server-bar label {
+        color: var(--muted);
+        font-size: 12px;
+        white-space: nowrap;
+      }
+      .server-bar input {
+        flex: 1;
+        background: var(--bg);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        color: var(--text);
+        padding: 6px 10px;
+        font-family: monospace;
+        font-size: 13px;
+      }
+      .server-bar input:focus {
+        outline: none;
+        border-color: var(--accent-a);
+      }
+
+      .main {
+        flex: 1;
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 0;
+        min-height: 0;
+      }
+
+      .panel {
+        border-right: 1px solid var(--border);
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+      }
+      .panel:last-child {
+        border-right: none;
+      }
+
+      .panel-header {
+        padding: 14px 16px 10px;
+        border-bottom: 1px solid var(--border);
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        flex-shrink: 0;
+      }
+
+      .panel-header .user-dot {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        flex-shrink: 0;
+      }
+      .panel-a .user-dot {
+        background: var(--accent-a);
+      }
+      .panel-b .user-dot {
+        background: var(--accent-b);
+      }
+
+      .panel-header h2 {
+        font-size: 13px;
+        font-weight: 600;
+        flex: 1;
+      }
+
+      .status-pill {
+        font-size: 11px;
+        padding: 2px 8px;
+        border-radius: 20px;
+        font-weight: 500;
+        transition: all 0.2s;
+      }
+      .status-pill.disconnected {
+        background: #2a1a1a;
+        color: var(--error);
+        border: 1px solid #5a2020;
+      }
+      .status-pill.connected {
+        background: #1a2e1a;
+        color: var(--success);
+        border: 1px solid #205a20;
+      }
+      .status-pill.connecting {
+        background: #2a2a1a;
+        color: var(--warning);
+        border: 1px solid #5a4a20;
+      }
+
+      .panel-body {
+        flex: 1;
+        overflow-y: auto;
+        padding: 12px 16px;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        min-height: 0;
+      }
+
+      /* Config section */
+      .config-section {
+        flex-shrink: 0;
+        padding: 12px 16px;
+        border-bottom: 1px solid var(--border);
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+
+      .field-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .field-row label {
+        font-size: 11px;
+        color: var(--muted);
+        width: 70px;
+        flex-shrink: 0;
+      }
+
+      .field-row input,
+      .field-row textarea {
+        flex: 1;
+        background: var(--bg);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        color: var(--text);
+        padding: 6px 10px;
+        font-family: var(--font);
+        font-size: 12px;
+        resize: none;
+      }
+      .field-row input:focus,
+      .field-row textarea:focus {
+        outline: none;
+        border-color: var(--accent-a);
+      }
+
+      .panel-b .field-row input:focus,
+      .panel-b .field-row textarea:focus {
+        border-color: var(--accent-b);
+      }
+
+      .btn-row {
+        display: flex;
+        gap: 6px;
+        flex-wrap: wrap;
+      }
+
+      button {
+        padding: 6px 12px;
+        border-radius: 6px;
+        border: none;
+        font-size: 12px;
+        font-weight: 500;
+        cursor: pointer;
+        transition:
+          opacity 0.15s,
+          transform 0.1s;
+        font-family: var(--font);
+      }
+      button:active {
+        transform: scale(0.97);
+      }
+      button:disabled {
+        opacity: 0.4;
+        cursor: not-allowed;
+      }
+
+      .btn-primary-a {
+        background: var(--accent-a);
+        color: #fff;
+      }
+      .btn-primary-b {
+        background: var(--accent-b);
+        color: #fff;
+      }
+      .btn-secondary {
+        background: var(--surface2);
+        color: var(--text);
+        border: 1px solid var(--border);
+      }
+      .btn-danger {
+        background: #3a1a1a;
+        color: var(--error);
+        border: 1px solid #5a2020;
+      }
+
+      /* Events log */
+      .events-log {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+      }
+
+      .event-entry {
+        display: flex;
+        gap: 8px;
+        align-items: flex-start;
+        padding: 7px 10px;
+        border-radius: 7px;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        animation: slideIn 0.15s ease;
+      }
+
+      @keyframes slideIn {
+        from {
+          opacity: 0;
+          transform: translateY(4px);
+        }
+        to {
+          opacity: 1;
+          transform: translateY(0);
+        }
+      }
+
+      .event-entry.sent {
+        border-left: 3px solid var(--accent-a);
+      }
+      .panel-b .event-entry.sent {
+        border-left: 3px solid var(--accent-b);
+      }
+      .event-entry.received {
+        border-left: 3px solid var(--success);
+      }
+      .event-entry.error {
+        border-left: 3px solid var(--error);
+        background: #1e1010;
+      }
+      .event-entry.system {
+        border-left: 3px solid var(--muted);
+      }
+      .event-entry.typing {
+        border-left: 3px solid var(--warning);
+      }
+
+      .event-tag {
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.06em;
+        padding: 1px 5px;
+        border-radius: 4px;
+        flex-shrink: 0;
+        margin-top: 1px;
+      }
+
+      .tag-sent {
+        background: #1a2040;
+        color: var(--accent-a);
+      }
+      .panel-b .tag-sent {
+        background: #2a1025;
+        color: var(--accent-b);
+      }
+      .tag-received {
+        background: #1a2e1a;
+        color: var(--success);
+      }
+      .tag-error {
+        background: #2a1010;
+        color: var(--error);
+      }
+      .tag-system {
+        background: var(--surface2);
+        color: var(--muted);
+      }
+      .tag-typing {
+        background: #2a2010;
+        color: var(--warning);
+      }
+
+      .event-content {
+        flex: 1;
+        min-width: 0;
+      }
+
+      .event-name {
+        font-size: 11px;
+        font-weight: 600;
+        color: var(--text);
+        margin-bottom: 3px;
+      }
+
+      .event-data {
+        font-family: monospace;
+        font-size: 11px;
+        color: var(--muted);
+        white-space: pre-wrap;
+        word-break: break-all;
+        line-height: 1.5;
+      }
+
+      .event-time {
+        font-size: 10px;
+        color: var(--muted);
+        flex-shrink: 0;
+        margin-top: 2px;
+      }
+
+      .empty-state {
+        color: var(--muted);
+        font-size: 12px;
+        text-align: center;
+        padding: 24px 0;
+      }
+
+      /* Message area */
+      .send-area {
+        padding: 12px 16px;
+        border-top: 1px solid var(--border);
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        flex-shrink: 0;
+      }
+
+      .conv-row {
+        display: flex;
+        gap: 6px;
+      }
+
+      .conv-row input {
+        flex: 1;
+        background: var(--bg);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        color: var(--text);
+        padding: 6px 10px;
+        font-size: 12px;
+      }
+      .conv-row input:focus {
+        outline: none;
+        border-color: var(--accent-a);
+      }
+      .panel-b .conv-row input:focus {
+        border-color: var(--accent-b);
+      }
+
+      .msg-row {
+        display: flex;
+        gap: 6px;
+      }
+
+      .msg-row textarea {
+        flex: 1;
+        background: var(--bg);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        color: var(--text);
+        padding: 6px 10px;
+        font-size: 12px;
+        resize: none;
+        height: 54px;
+        font-family: var(--font);
+      }
+      .msg-row textarea:focus {
+        outline: none;
+        border-color: var(--accent-a);
+      }
+      .panel-b .msg-row textarea:focus {
+        border-color: var(--accent-b);
+      }
+
+      .actions-row {
+        display: flex;
+        gap: 6px;
+        flex-wrap: wrap;
+      }
+
+      /* Scrollbar */
+      ::-webkit-scrollbar {
+        width: 5px;
+      }
+      ::-webkit-scrollbar-track {
+        background: transparent;
+      }
+      ::-webkit-scrollbar-thumb {
+        background: var(--border);
+        border-radius: 10px;
+      }
+
+      .divider {
+        font-size: 10px;
+        text-transform: uppercase;
+        letter-spacing: 0.1em;
+        color: var(--muted);
+        padding: 2px 0;
+        border-bottom: 1px solid var(--border);
+        margin-bottom: 4px;
+      }
+
+      /* Typing indicator */
+      .typing-indicator {
+        font-size: 11px;
+        color: var(--warning);
+        height: 16px;
+        padding: 0 2px;
+        font-style: italic;
+        transition: opacity 0.2s;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>⚡ Chat Gateway Tester</h1>
+      <span class="badge">Socket.IO</span>
+      <span class="badge">Two-user simulation</span>
+    </header>
+
+    <div class="server-bar">
+      <label>Server URL</label>
+      <input
+        type="text"
+        id="serverUrl"
+        value="http://localhost:3000"
+        placeholder="http://localhost:3000"
+      />
+    </div>
+
+    <div class="main">
+      <!-- USER A -->
+      <div class="panel panel-a" id="panelA">
+        <div class="panel-header">
+          <div class="user-dot"></div>
+          <h2>User A</h2>
+          <span class="status-pill disconnected" id="statusA"
+            >Disconnected</span
+          >
+        </div>
+
+        <div class="config-section">
+          <div class="field-row">
+            <label>JWT Token</label>
+            <input
+              type="text"
+              id="tokenA"
+              placeholder="Paste Bearer token or raw JWT…"
+            />
+          </div>
+          <div class="btn-row">
+            <button class="btn-primary-a" onclick="connect('A')">
+              Connect
+            </button>
+            <button
+              class="btn-danger"
+              onclick="disconnect('A')"
+              id="disconnectA"
+              disabled
+            >
+              Disconnect
+            </button>
+            <button class="btn-secondary" onclick="clearLog('A')">
+              Clear log
+            </button>
+          </div>
+        </div>
+
+        <div class="panel-body" id="logA">
+          <div class="empty-state">Connect to start capturing events</div>
+        </div>
+
+        <div class="send-area">
+          <div class="conv-row">
+            <input type="text" id="convIdA" placeholder="Conversation ID" />
+            <button class="btn-primary-a" onclick="joinConversation('A')">
+              Join
+            </button>
+            <button class="btn-secondary" onclick="leaveConversation('A')">
+              Leave
+            </button>
+          </div>
+          <div class="typing-indicator" id="typingA"></div>
+          <div class="msg-row">
+            <textarea
+              id="msgA"
+              placeholder="Type a message…"
+              oninput="onType('A')"
+              onblur="stopTyping('A')"
+            ></textarea>
+          </div>
+          <div class="actions-row">
+            <button class="btn-primary-a" onclick="sendMessage('A')">
+              Send message
+            </button>
+            <button class="btn-secondary" onclick="markRead('A')">
+              Mark read
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- USER B -->
+      <div class="panel panel-b" id="panelB">
+        <div class="panel-header">
+          <div class="user-dot"></div>
+          <h2>User B</h2>
+          <span class="status-pill disconnected" id="statusB"
+            >Disconnected</span
+          >
+        </div>
+
+        <div class="config-section">
+          <div class="field-row">
+            <label>JWT Token</label>
+            <input
+              type="text"
+              id="tokenB"
+              placeholder="Paste Bearer token or raw JWT…"
+            />
+          </div>
+          <div class="btn-row">
+            <button class="btn-primary-b" onclick="connect('B')">
+              Connect
+            </button>
+            <button
+              class="btn-danger"
+              onclick="disconnect('B')"
+              id="disconnectB"
+              disabled
+            >
+              Disconnect
+            </button>
+            <button class="btn-secondary" onclick="clearLog('B')">
+              Clear log
+            </button>
+          </div>
+        </div>
+
+        <div class="panel-body" id="logB">
+          <div class="empty-state">Connect to start capturing events</div>
+        </div>
+
+        <div class="send-area">
+          <div class="conv-row">
+            <input type="text" id="convIdB" placeholder="Conversation ID" />
+            <button class="btn-primary-b" onclick="joinConversation('B')">
+              Join
+            </button>
+            <button class="btn-secondary" onclick="leaveConversation('B')">
+              Leave
+            </button>
+          </div>
+          <div class="typing-indicator" id="typingB"></div>
+          <div class="msg-row">
+            <textarea
+              id="msgB"
+              placeholder="Type a message…"
+              oninput="onType('B')"
+              onblur="stopTyping('B')"
+            ></textarea>
+          </div>
+          <div class="actions-row">
+            <button class="btn-primary-b" onclick="sendMessage('B')">
+              Send message
+            </button>
+            <button class="btn-secondary" onclick="markRead('B')">
+              Mark read
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      const sockets = { A: null, B: null };
+      const typingTimers = { A: null, B: null };
+      const isTypingActive = { A: false, B: false };
+
+      // ─── Helpers ─────────────────────────────────────────────────────────────────
+
+      function now() {
+        return new Date().toLocaleTimeString("en-GB", { hour12: false });
+      }
+
+      function addLog(user, type, name, data) {
+        const log = document.getElementById("log" + user);
+        const empty = log.querySelector(".empty-state");
+        if (empty) empty.remove();
+
+        const tagMap = {
+          sent: "SENT",
+          received: "RECV",
+          error: "ERR",
+          system: "SYS",
+          typing: "TYPE",
+        };
+
+        const entry = document.createElement("div");
+        entry.className = `event-entry ${type}`;
+
+        const dataStr =
+          typeof data === "object"
+            ? JSON.stringify(data, null, 2)
+            : String(data ?? "");
+
+        entry.innerHTML = `
+    <span class="event-tag tag-${type}">${tagMap[type] || type}</span>
+    <div class="event-content">
+      <div class="event-name">${name}</div>
+      ${dataStr ? `<div class="event-data">${escHtml(dataStr)}</div>` : ""}
+    </div>
+    <span class="event-time">${now()}</span>
+  `;
+
+        log.appendChild(entry);
+        log.scrollTop = log.scrollHeight;
+      }
+
+      function escHtml(s) {
+        return s
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;");
+      }
+
+      function setStatus(user, state) {
+        const pill = document.getElementById("status" + user);
+        pill.textContent = state.charAt(0).toUpperCase() + state.slice(1);
+        pill.className = `status-pill ${state}`;
+        document.getElementById("disconnect" + user).disabled =
+          state !== "connected";
+      }
+
+      function clearLog(user) {
+        const log = document.getElementById("log" + user);
+        log.innerHTML = '<div class="empty-state">Log cleared</div>';
+      }
+
+      function convId(user) {
+        return document.getElementById("convId" + user).value.trim();
+      }
+
+      // ─── Connection ───────────────────────────────────────────────────────────────
+
+      function connect(user) {
+        const token = document.getElementById("token" + user).value.trim();
+        if (!token) {
+          alert("Please paste a JWT token for User " + user);
+          return;
+        }
+
+        if (sockets[user]) {
+          sockets[user].disconnect();
+          sockets[user] = null;
+        }
+
+        const url = document.getElementById("serverUrl").value.trim();
+        setStatus(user, "connecting");
+        addLog(user, "system", "Connecting…", { url });
+
+        const socket = io(url, {
+          auth: { token },
+          transports: ["websocket", "polling"],
+          reconnection: false,
+        });
+
+        sockets[user] = socket;
+        bindEvents(user, socket);
+      }
+
+      function disconnect(user) {
+        if (sockets[user]) {
+          sockets[user].disconnect();
+          sockets[user] = null;
+        }
+      }
+
+      function bindEvents(user, socket) {
+        socket.on("connect", () => {
+          setStatus(user, "connected");
+          addLog(user, "system", "Connected", { socketId: socket.id });
+        });
+
+        socket.on("disconnect", (reason) => {
+          setStatus(user, "disconnected");
+          addLog(user, "system", "Disconnected", { reason });
+          sockets[user] = null;
+        });
+
+        socket.on("connect_error", (err) => {
+          setStatus(user, "disconnected");
+          addLog(user, "error", "Connection error", { message: err.message });
+          sockets[user] = null;
+        });
+
+        socket.on("error", (data) => {
+          addLog(user, "error", "Server error", data);
+        });
+
+        // ── Chat events ──────────────────────────────────────────────────
+        socket.on("joined_conversation", (data) => {
+          addLog(user, "received", "joined_conversation", data);
+        });
+
+        socket.on("left_conversation", (data) => {
+          addLog(user, "received", "left_conversation", data);
+        });
+
+        socket.on("new_message", (data) => {
+          addLog(user, "received", "new_message", data);
+        });
+
+        socket.on("user_typing", (data) => {
+          addLog(user, "typing", "user_typing", data);
+          const other = user === "A" ? "B" : "A";
+          // show indicator only in the *other* panel when appropriate
+          const el = document.getElementById("typing" + user);
+
+          el.textContent = `${data.userName || data.userId} is typing…`;
+          clearTimeout(typingTimers["indicator_" + user]);
+          typingTimers["indicator_" + user] = setTimeout(() => {
+            el.textContent = "";
+          }, 3000);
+        });
+
+        socket.on("user_stopped_typing", (data) => {
+          addLog(user, "typing", "user_stopped_typing", data);
+          document.getElementById("typing" + user).textContent = "";
+        });
+
+        socket.on("read_receipt", (data) => {
+          addLog(user, "received", "read_receipt", data);
+        });
+
+        socket.on("user_status_changed", (data) => {
+          addLog(user, "received", "user_status_changed", data);
+        });
+
+        // Catch-all for any other server-emitted events
+        const knownEvents = new Set([
+          "connect",
+          "disconnect",
+          "connect_error",
+          "error",
+          "joined_conversation",
+          "left_conversation",
+          "new_message",
+          "user_typing",
+          "user_stopped_typing",
+          "read_receipt",
+          "user_status_changed",
+        ]);
+        const origOn = socket.on.bind(socket);
+        socket.onAny((event, ...args) => {
+          if (!knownEvents.has(event)) {
+            addLog(user, "received", event, args[0] ?? null);
+          }
+        });
+      }
+
+      // ─── Gateway actions ──────────────────────────────────────────────────────────
+
+      function requireSocket(user) {
+        if (!sockets[user]) {
+          alert("User " + user + " is not connected");
+          return null;
+        }
+        return sockets[user];
+      }
+
+      function joinConversation(user) {
+        const s = requireSocket(user);
+        if (!s) return;
+        const id = convId(user);
+        if (!id) {
+          alert("Enter a conversation ID");
+          return;
+        }
+        addLog(user, "sent", "join_conversation", { conversationId: id });
+        s.emit("join_conversation", { conversationId: id }, (ack) => {
+          if (ack) addLog(user, "received", "ack: join_conversation", ack);
+        });
+      }
+
+      function leaveConversation(user) {
+        const s = requireSocket(user);
+        if (!s) return;
+        const id = convId(user);
+        if (!id) {
+          alert("Enter a conversation ID");
+          return;
+        }
+        addLog(user, "sent", "leave_conversation", { conversationId: id });
+        s.emit("leave_conversation", { conversationId: id }, (ack) => {
+          if (ack) addLog(user, "received", "ack: leave_conversation", ack);
+        });
+      }
+
+      function sendMessage(user) {
+        const s = requireSocket(user);
+        if (!s) return;
+        const id = convId(user);
+        if (!id) {
+          alert("Enter a conversation ID");
+          return;
+        }
+        const textarea = document.getElementById("msg" + user);
+        const content = textarea.value.trim();
+        if (!content) {
+          alert("Type a message first");
+          return;
+        }
+
+        const dto = { conversationId: id, content, type: "text" };
+        addLog(user, "sent", "send_message", dto);
+        s.emit("send_message", dto, (ack) => {
+          if (ack) addLog(user, "received", "ack: send_message", ack);
+        });
+
+        textarea.value = "";
+        stopTyping(user);
+      }
+
+      function markRead(user) {
+        const s = requireSocket(user);
+        if (!s) return;
+        const id = convId(user);
+        if (!id) {
+          alert("Enter a conversation ID");
+          return;
+        }
+        addLog(user, "sent", "message_read", { conversationId: id });
+        s.emit("message_read", { conversationId: id });
+      }
+
+      function onType(user) {
+        const s = requireSocket(user);
+        if (!s) return;
+        const id = convId(user);
+        if (!id) return;
+
+        if (!isTypingActive[user]) {
+          isTypingActive[user] = true;
+          addLog(user, "sent", "typing_start", { conversationId: id });
+          s.emit("typing_start", { conversationId: id });
+        }
+
+        clearTimeout(typingTimers[user]);
+        typingTimers[user] = setTimeout(() => stopTyping(user), 2000);
+      }
+
+      function stopTyping(user) {
+        clearTimeout(typingTimers[user]);
+        if (!isTypingActive[user]) return;
+        isTypingActive[user] = false;
+        const s = sockets[user];
+        if (!s) return;
+        const id = convId(user);
+        if (!id) return;
+        addLog(user, "sent", "typing_stop", { conversationId: id });
+        s.emit("typing_stop", { conversationId: id });
+      }
+
+      // Allow Enter to send, Shift+Enter for newline
+      document.getElementById("msgA").addEventListener("keydown", (e) => {
+        if (e.key === "Enter" && !e.shiftKey) {
+          e.preventDefault();
+          sendMessage("A");
+        }
+      });
+      document.getElementById("msgB").addEventListener("keydown", (e) => {
+        if (e.key === "Enter" && !e.shiftKey) {
+          e.preventDefault();
+          sendMessage("B");
+        }
+      });
+    </script>
+  </body>
+</html>
