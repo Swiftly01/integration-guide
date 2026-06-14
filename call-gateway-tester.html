@@ -407,6 +407,8 @@ const camEnabled = { A: true, B: true };
 let currentCallId    = null;
 let pendingCallId    = null;
 let pendingIceQueue  = { A: [], B: [] };
+let pendingOutgoingIce = { A: [], B: [] }; // ICE candidates generated before we know the callId
+let peerJoinedPending  = { A: false, B: false }; // true if call_peer_joined arrived before currentCallId was set
 let callTimerInterval = null;
 let callStartTime    = null;
 let iceServersCache  = null;
@@ -574,22 +576,19 @@ function bindSocketEvents(u, socket) {
   // NOTE: the server does NOT emit a separate 'call_initiated' event.
   // The caller's ack arrives via the emit() callback in initiateCall().
 
+  // ── FIX: call_peer_joined can arrive BEFORE the call_initiate ack
+  // (and therefore before pcs['A'] / currentCallId are set). If that
+  // happens, defer the offer until the ack handler creates the peer
+  // connection and sets currentCallId, then send it from there. ────
   socket.on('call_peer_joined', async (data) => {
     addLog(u, 'received', 'call_peer_joined', data);
-    if (u === 'A' && pcs['A']) {
-      addLog('A', 'webrtc', 'Creating SDP offer…');
-      try {
-        const offer = await pcs['A'].createOffer();
-        await pcs['A'].setLocalDescription(offer);
-        sockets['A'].emit('call_offer', {
-          callId:  currentCallId,
-          sdpType: offer.type,
-          sdp:     offer.sdp,
-        });
-        addLog('A', 'sent', 'call_offer', { sdpType: offer.type });
-      } catch (e) {
-        addLog('A', 'error', 'Failed to create offer', { message: e.message });
+    if (u === 'A') {
+      if (!pcs['A'] || !currentCallId) {
+        peerJoinedPending['A'] = true;
+        addLog('A', 'webrtc', 'Peer joined before call_initiate ack — deferring offer');
+        return;
       }
+      await createAndSendOffer('A');
     }
   });
 
@@ -681,9 +680,33 @@ function bindSocketEvents(u, socket) {
   });
 }
 
+// ── FIX: extracted so it can be invoked either immediately on
+// call_peer_joined or later (from the call_initiate ack handler) if
+// call_peer_joined arrived too early. ───────────────────────────────
+async function createAndSendOffer(u) {
+  if (!pcs[u]) {
+    addLog(u, 'error', 'Cannot create offer — no peer connection yet');
+    return;
+  }
+  addLog(u, 'webrtc', 'Creating SDP offer…');
+  try {
+    const offer = await pcs[u].createOffer();
+    await pcs[u].setLocalDescription(offer);
+    sockets[u].emit('call_offer', {
+      callId:  currentCallId,
+      sdpType: offer.type,
+      sdp:     offer.sdp,
+    });
+    addLog(u, 'sent', 'call_offer', { sdpType: offer.type });
+  } catch (e) {
+    addLog(u, 'error', 'Failed to create offer', { message: e.message });
+  }
+}
+
 function createPeer(u, iceServers) {
   if (pcs[u]) { pcs[u].close(); pcs[u] = null; }
-  pendingIceQueue[u] = [];
+  pendingIceQueue[u]    = [];
+  pendingOutgoingIce[u] = [];
 
   const config = {
     iceServers: iceServers || [
@@ -695,15 +718,23 @@ function createPeer(u, iceServers) {
   const pc = new RTCPeerConnection(config);
   pcs[u]   = pc;
 
+  // ── FIX: if we don't yet know the callId (e.g. pc created before the
+  // call_initiate ack arrives), queue the candidate instead of
+  // silently dropping it. Flushed via flushOutgoingIce() once the
+  // callId is known. ─────────────────────────────────────────────────
   pc.onicecandidate = (ev) => {
-    if (ev.candidate && sockets[u] && (currentCallId || pendingCallId)) {
+    if (!ev.candidate) return;
+    const callId = currentCallId || pendingCallId;
+    if (sockets[u] && callId) {
       sockets[u].emit('call_ice_candidate', {
-        callId:        currentCallId || pendingCallId,
+        callId,
         candidate:     ev.candidate.candidate,
         sdpMid:        ev.candidate.sdpMid,
         sdpMLineIndex: ev.candidate.sdpMLineIndex,
       });
       addLog(u, 'sent', 'call_ice_candidate', { sdpMid: ev.candidate.sdpMid });
+    } else {
+      pendingOutgoingIce[u].push(ev.candidate);
     }
   };
 
@@ -737,11 +768,32 @@ function createPeer(u, iceServers) {
   return pc;
 }
 
+// ── FIX: send any ICE candidates that were generated before we knew
+// the callId. Call this as soon as currentCallId/pendingCallId becomes
+// available. ─────────────────────────────────────────────────────────
+function flushOutgoingIce(u) {
+  const callId = currentCallId || pendingCallId;
+  if (!callId || !sockets[u] || pendingOutgoingIce[u].length === 0) return;
+
+  for (const candidate of pendingOutgoingIce[u]) {
+    sockets[u].emit('call_ice_candidate', {
+      callId,
+      candidate:     candidate.candidate,
+      sdpMid:        candidate.sdpMid,
+      sdpMLineIndex: candidate.sdpMLineIndex,
+    });
+    addLog(u, 'sent', 'call_ice_candidate', { sdpMid: candidate.sdpMid });
+  }
+  pendingOutgoingIce[u] = [];
+}
+
 function closePeer(u) {
   if (pcs[u]) { pcs[u].close(); pcs[u] = null; }
   stopStream(u);
   document.getElementById('remoteVideo'+u).srcObject = null;
-  pendingIceQueue[u] = [];
+  pendingIceQueue[u]    = [];
+  pendingOutgoingIce[u] = [];
+  peerJoinedPending[u]  = false;
 }
 
 function stopStream(u) {
@@ -752,11 +804,24 @@ function stopStream(u) {
   overlay.innerHTML = `<span class="cam-icon">🎥</span><span>Camera preview will appear here</span>`;
 }
 
+// ── FIX: only show the local <video> element if the stream actually
+// has a video track. Previously this unconditionally bound the stream
+// and hid the overlay, so an audio-only call (video: false) showed a
+// blank/black "camera preview" box instead of the audio-only badge. ──
 function attachLocalPreview(u) {
   if (!streams[u]) return;
   const localVid = document.getElementById('localVideo'+u);
-  localVid.srcObject = streams[u];
-  document.getElementById('overlay'+u).style.display = 'none';
+  const overlay  = document.getElementById('overlay'+u);
+  const hasVideo = streams[u].getVideoTracks().length > 0;
+
+  if (hasVideo) {
+    localVid.srcObject = streams[u];
+    overlay.style.display = 'none';
+  } else {
+    localVid.srcObject = null;
+    overlay.style.display = 'flex';
+    overlay.innerHTML = `<span class="cam-icon">🎙</span><span>Audio only</span>`;
+  }
 }
 
 async function getLocalMedia(u, withVideo = true) {
@@ -773,11 +838,7 @@ async function getLocalMedia(u, withVideo = true) {
     try {
       const audioOnly = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
       streams[u] = audioOnly;
-      const localVid = document.getElementById('localVideo'+u);
-      localVid.srcObject = audioOnly;
-      const overlay = document.getElementById('overlay'+u);
-      overlay.style.display = 'flex';
-      overlay.innerHTML = `<span class="cam-icon">🎙</span><span>Audio only</span>`;
+      attachLocalPreview(u);
       addLog(u, 'webrtc', 'Audio-only fallback acquired');
       return audioOnly;
     } catch (e2) {
@@ -794,16 +855,36 @@ function addTracksToPC(u) {
   }
 }
 
+// ── FIX: create the RTCPeerConnection SYNCHRONOUSLY, before/alongside
+// the call_initiate emit, using default STUN servers. This closes the
+// race where call_peer_joined arrives before the ack and pcs['A'] is
+// still null (the original bug — the offer-creation block was skipped
+// entirely, so B never got an offer and the call never went ACTIVE).
+//
+// Once the ack arrives with the real ICE server list (incl. TURN), we
+// upgrade the existing connection via setConfiguration() rather than
+// recreating it. If call_peer_joined already fired in the meantime
+// (peerJoinedPending), we send the deferred offer now. ───────────────
 async function initiateCall(type = 'video') {
   const s = sockets['A'];
   if (!s) { alert('Connect User A first'); return; }
   const calleeId = document.getElementById('calleeId').value.trim();
   if (!calleeId) { alert('Enter the Callee ID (User B UUID)'); return; }
 
+  // Grab the camera/mic and show the preview right away.
+  const withVideo = (type === 'video');
+  const stream = await getLocalMedia('A', withVideo);
+
+  // Create the peer connection now (default STUN) so it's ready
+  // regardless of how fast call_peer_joined comes back.
+  peerJoinedPending['A'] = false;
+  createPeer('A', null);
+  if (stream) addTracksToPC('A');
+
   const dto = { calleeId, type };
   addLog('A', 'sent', 'call_initiate', dto);
 
-  s.emit('call_initiate', dto, async (ack) => {
+  s.emit('call_initiate', dto, (ack) => {
     if (!ack) {
       addLog('A', 'error', 'call_initiate — no ack received (server may not send one)', null);
       return;
@@ -817,11 +898,26 @@ async function initiateCall(type = 'video') {
     setCallDisplay('A', ack.callId);
     document.getElementById('btnCancelA').disabled = false;
 
-    const withVideo = (type === 'video');
-    const stream    = await getLocalMedia('A', withVideo);
+    // Upgrade ICE servers (e.g. TURN creds) on the already-created pc.
+    if (ack.iceServers && pcs['A']) {
+      try {
+        pcs['A'].setConfiguration({ iceServers: ack.iceServers });
+        addLog('A', 'webrtc', 'Updated ICE servers from ack', {
+          iceServers: ack.iceServers.map(s => s.urls)
+        });
+      } catch (e) {
+        addLog('A', 'error', 'setConfiguration failed', { message: e.message });
+      }
+    }
 
-    createPeer('A', ack.iceServers);
-    if (stream) addTracksToPC('A');
+    // Send any ICE candidates gathered before we had a callId.
+    flushOutgoingIce('A');
+
+    // If call_peer_joined already arrived, send the offer now.
+    if (peerJoinedPending['A']) {
+      peerJoinedPending['A'] = false;
+      createAndSendOffer('A');
+    }
   });
 }
 
@@ -836,14 +932,33 @@ async function answerCall() {
   const s = sockets['B'];
   if (!s) { alert('Connect User B first'); return; }
 
+  // Grab the camera/mic and show the preview right away.
+  const stream = await getLocalMedia('B', true);
+
+  // ── FIX: create the peer connection synchronously (before the
+  // call_join emit), using the ICE servers received with
+  // call_incoming. This avoids the symmetric race where call_offer
+  // could arrive before pcs['B'] exists. ──────────────────────────────
+  createPeer('B', iceServersCache);
+  if (stream) addTracksToPC('B');
+  flushOutgoingIce('B');
+
   addLog('B', 'sent', 'call_join', { callId });
 
-  s.emit('call_join', { callId }, async (ack) => {
+  s.emit('call_join', { callId }, (ack) => {
     if (ack) addLog('B', 'received', 'call_join ack', ack);
 
-    const stream = await getLocalMedia('B', true);
-    createPeer('B', iceServersCache);
-    if (stream) addTracksToPC('B');
+    if (ack && ack.iceServers && pcs['B']) {
+      try {
+        pcs['B'].setConfiguration({ iceServers: ack.iceServers });
+        addLog('B', 'webrtc', 'Updated ICE servers from ack', {
+          iceServers: ack.iceServers.map(s => s.urls)
+        });
+      } catch (e) {
+        addLog('B', 'error', 'setConfiguration failed', { message: e.message });
+      }
+    }
+    flushOutgoingIce('B');
   });
 
   setCallBadge('B', 'active');
