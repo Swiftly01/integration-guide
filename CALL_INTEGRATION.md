@@ -15,7 +15,7 @@
 - [Phase 7 — In-Call Controls](#phase-7--in-call-controls)
 - [Phase 8 — Ending a Call](#phase-8--ending-a-call)
 - [Phase 9 — Declining or Cancelling](#phase-9--declining-or-cancelling)
-- [Phase 10 — Handling Disconnects](#phase-10--handling-disconnects)
+- [Phase 10 — Handling Disconnects & Missed Calls](#phase-10--handling-disconnects--missed-calls)
 - [Phase 11 — Cleanup](#phase-11--cleanup)
 - [Complete Flow Summary](#complete-flow-summary)
 - [Key Rules](#key-rules)
@@ -70,7 +70,9 @@ The user who taps the call button is the **caller**. Only the caller emits `call
 - User A is inside a chat conversation and taps the call icon.
 - The app collects the callee's user ID from the profile or conversation participants.
 
-> ✅ **Rule:** Only one side calls `call_initiate` per session. The server creates the `CallSession`, assigns it an ID, and notifies the callee via their personal socket room.
+> ✅ **Rules:**
+> - Only one side calls `call_initiate` per session. The server creates the `CallSession`, assigns it an ID, and notifies the callee via their personal socket room.
+> - The server rejects self-calls (`calleeId === callerId`) with a `WsException`. Never send `call_initiate` with your own user ID as the callee.
 
 ---
 
@@ -93,9 +95,9 @@ localVideoEl.muted = true  // always mute local preview
 
 ### Step 2 — Create RTCPeerConnection
 
+Create the peer connection **before** emitting `call_initiate` using Google STUN as a placeholder. The server returns real ICE servers (including TURN) in the ack, which you apply via `setConfiguration()` without recreating the connection. Creating the PC early closes the race where `call_peer_joined` arrives before the ack.
+
 ```js
-// ICE servers come back in the call_initiate ack (step 3)
-// Create with Google STUN as placeholder for now
 const pc = new RTCPeerConnection({
   iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
 })
@@ -109,14 +111,19 @@ pc.ontrack = (ev) => {
 }
 
 // Forward ICE candidates to the server
+// Buffer them if callId is not yet known (ack hasn't arrived)
+let pendingOutgoingIce = []
 pc.onicecandidate = (ev) => {
-  if (ev.candidate) {
+  if (!ev.candidate) return
+  if (callId) {
     callSocket.emit('call_ice_candidate', {
       callId,
-      candidate: ev.candidate.candidate,
-      sdpMid: ev.candidate.sdpMid,
+      candidate:     ev.candidate.candidate,
+      sdpMid:        ev.candidate.sdpMid,
       sdpMLineIndex: ev.candidate.sdpMLineIndex,
     })
+  } else {
+    pendingOutgoingIce.push(ev.candidate)
   }
 }
 ```
@@ -126,27 +133,53 @@ pc.onicecandidate = (ev) => {
 ```js
 callSocket.emit('call_initiate', {
   calleeId: '<userB-uuid>',
-  type: 'video',  // or 'audio'
+  type: 'video',  // or 'voice'
 }, (ack) => {
+  // NEW: server returns call_unreachable if callee has no active socket
+  if (ack.event === 'call_unreachable') {
+    showOfflineUI('User is not online')
+    closePeerConnection()
+    return
+  }
+
   // ack = { event: 'call_initiated', callId, iceServers }
   callId = ack.callId
 
-  // Recreate PC with real ICE servers from server
-  pc.close()
-  pc = createPeerConnection(ack.iceServers, stream)
+  // Upgrade ICE servers on the existing PC (adds TURN credentials)
+  pc.setConfiguration({ iceServers: ack.iceServers })
 
-  // Show ringing UI
+  // Flush any ICE candidates that were gathered before we had a callId
+  for (const c of pendingOutgoingIce) {
+    callSocket.emit('call_ice_candidate', {
+      callId,
+      candidate:     c.candidate,
+      sdpMid:        c.sdpMid,
+      sdpMLineIndex: c.sdpMLineIndex,
+    })
+  }
+  pendingOutgoingIce = []
+
+  // If call_peer_joined already arrived before this ack, send the offer now
+  if (peerJoinedBeforeAck) {
+    peerJoinedBeforeAck = false
+    createAndSendOffer()
+  }
+
   showRingingScreen()
 })
 ```
 
-> 📌 **ICE servers:** The server returns its configured STUN/TURN servers in the ack. Always use these rather than hardcoding your own. Recreate the `RTCPeerConnection` with them before SDP negotiation begins.
+> 📌 **ICE servers:** The server returns its configured STUN/TURN servers in the ack. Apply them with `pc.setConfiguration()` — do not recreate the `RTCPeerConnection`, as the connection has already started gathering candidates.
+
+> ⚠️ **`call_peer_joined` race:** `call_peer_joined` can arrive on the caller's socket before the `call_initiate` ack (because the callee emits `call_join` which triggers the server to broadcast `call_peer_joined` immediately). Guard against this with a `peerJoinedBeforeAck` flag as shown above.
 
 ---
 
 ## Phase 4 — Receiving a Call (Callee)
 
 User B receives `call_incoming` on their personal socket room the moment User A emits `call_initiate`. This fires even if User B has not joined any call room — the server delivers it directly to their connected socket.
+
+> 📌 **Callee must be online:** The server now checks whether the callee has any active sockets before creating the call. If User B is offline, the caller receives `call_unreachable` in the ack and no `call_incoming` is ever sent.
 
 ### Listen for incoming calls globally (set up at login)
 
@@ -166,15 +199,25 @@ callSocket.on('call_incoming', (data) => {
     onDecline:  () => declineCall(data.callId),
   })
 })
+
+// NEW: ringing timed out — server marks call MISSED after 30s with no answer
+callSocket.on('call_missed', (data) => {
+  // data = { callId, fullName }
+  hideIncomingCallUI()
+  showMissedCallNotification(data.fullName)
+  cleanupCall()
+})
 ```
 
-> 📱 **Mobile:** If the app is backgrounded, use a push notification to wake it and show the incoming call UI. Once the socket reconnects, `call_incoming` will **not** re-fire — so the push payload should include `callId` and caller info directly.
+> 📱 **Mobile:** If the app is backgrounded, use a push notification to wake it and show the incoming call UI. Once the socket reconnects, `call_incoming` will **not** re-fire — so the push payload should include `callId` and caller info directly. If the socket reconnects and the call is already `MISSED`, no further events arrive — use the push payload to show a missed call screen.
 
 ---
 
 ## Phase 5 — Answering a Call (Callee)
 
 ### Step 1 — Acquire media and create peer connection
+
+Create the peer connection **before** emitting `call_join` using the ICE servers from `call_incoming`. This closes the symmetric race where `call_offer` arrives before `pcs[B]` exists.
 
 ```js
 async function answerCall(callId, iceServers) {
@@ -185,6 +228,7 @@ async function answerCall(callId, iceServers) {
   localVideoEl.srcObject = stream
   localVideoEl.muted = true
 
+  // Create PC before emitting call_join
   pc = new RTCPeerConnection({ iceServers })
   stream.getTracks().forEach(track => pc.addTrack(track, stream))
 
@@ -205,8 +249,6 @@ async function answerCall(callId, iceServers) {
 ### Step 2 — Emit `call_join`
 
 ```js
-  // Joining the call room triggers the server to notify the caller.
-  // The caller then creates and sends the SDP offer.
   callSocket.emit('call_join', { callId }, (ack) => {
     console.log('Joined call room:', ack)
   })
@@ -224,7 +266,18 @@ After `call_join` fires, the SDP offer/answer exchange and ICE negotiation happe
 ### Caller — listen for `call_peer_joined` and create offer
 
 ```js
+let peerJoinedBeforeAck = false
+
 callSocket.on('call_peer_joined', async ({ callId }) => {
+  // Guard: if the call_initiate ack hasn't arrived yet, defer the offer
+  if (!pc || !callId) {
+    peerJoinedBeforeAck = true
+    return
+  }
+  await createAndSendOffer()
+})
+
+async function createAndSendOffer() {
   const offer = await pc.createOffer()
   await pc.setLocalDescription(offer)
 
@@ -233,7 +286,7 @@ callSocket.on('call_peer_joined', async ({ callId }) => {
     sdpType: offer.type,
     sdp:     offer.sdp,
   })
-})
+}
 ```
 
 ### Callee — receive offer and send answer
@@ -345,15 +398,17 @@ await sender.replaceTrack(newStream.getVideoTracks()[0])
 
 ## Phase 8 — Ending a Call
 
-Either participant can end the call. The server broadcasts `call:ended` to everyone in the call room and posts a summary message to the linked conversation (if one exists).
+Either participant can end the call. The server broadcasts `call_ended` to everyone in the call room and posts a summary message to the linked conversation (if one exists).
+
+> ⚠️ **Event name:** The emit event is `call_end` (underscore) and the received event is `call_ended`. Do not use `call:end` or `call:ended` — those use colons and will not be handled by the gateway.
 
 ```js
 function endCall(callId) {
-  callSocket.emit('call:end', { callId })
+  callSocket.emit('call_end', { callId })
 }
 
 // Both sides receive:
-callSocket.on('call:ended', ({ callId, endedBy, durationSeconds }) => {
+callSocket.on('call_ended', ({ callId, endedBy, durationSeconds }) => {
   stopCallTimer()
   closePeerConnection()
   stopLocalMedia()
@@ -367,6 +422,8 @@ callSocket.on('call:ended', ({ callId, endedBy, durationSeconds }) => {
 
 ### Callee declines
 
+Only the callee can decline. The server enforces this — a caller emitting `call_decline` will receive a `WsException`.
+
 ```js
 callSocket.emit('call_decline', { callId })
 
@@ -379,18 +436,22 @@ callSocket.on('call_decline', ({ callId, calleeId }) => {
 
 ### Caller cancels before answer
 
+Only the caller can cancel. The server enforces this — a callee emitting `call_cancel` will receive a `WsException`.
+
 ```js
 callSocket.emit('call_cancel', { callId })
 
 // Callee receives:
-callSocket.on('call_cancelled', ({ callId }) => {
+callSocket.on('call_cancelled', ({ callId, callerId }) => {
   hideIncomingCallUI()
 })
 ```
 
 ---
 
-## Phase 10 — Handling Disconnects
+## Phase 10 — Handling Disconnects & Missed Calls
+
+### Peer disconnects during a call
 
 If a participant's socket drops during an active or ringing call, the server automatically marks the call as `FAILED` and notifies the remaining participant.
 
@@ -415,11 +476,42 @@ callSocket.on('disconnect', (reason) => {
 
 > ⚠️ **Reconnect strategy:** If the socket reconnects quickly, `call_failed` has already fired on the server. Do not attempt to resume — show the user a "Call ended" screen and offer to call back.
 
+### Callee does not answer (missed call)
+
+If the callee does not answer within 30 seconds, the server marks the call `MISSED` and emits `call_missed` to both participants.
+
+```js
+// Both sides receive this after 30s with no answer
+callSocket.on('call_missed', ({ callId, fullName }) => {
+  stopCallTimer()
+  closePeerConnection()
+  stopLocalMedia()
+  // Caller: show "No answer" UI
+  // Callee: show missed call notification
+  showMissedCallUI({ fullName })
+})
+```
+
+### Callee is offline
+
+If the callee has no active socket when `call_initiate` is sent, the server does not create a ringing call. Instead it returns `call_unreachable` in the ack and immediately marks the call `MISSED`.
+
+```js
+callSocket.emit('call_initiate', dto, (ack) => {
+  if (ack.event === 'call_unreachable') {
+    showOfflineUI('User is currently offline')
+    closePeerConnection()
+    return
+  }
+  // ... normal ringing flow
+})
+```
+
 ---
 
 ## Phase 11 — Cleanup
 
-Always clean up after every call outcome — ended, declined, cancelled, or failed. Failing to stop tracks leaves the camera/mic indicator active in the browser.
+Always clean up after every call outcome — ended, declined, cancelled, missed, unreachable, or failed. Failing to stop tracks leaves the camera/mic indicator active in the browser.
 
 ```js
 function cleanupCall() {
@@ -437,7 +529,9 @@ function cleanupCall() {
 
   // Reset state
   activeCallId       = null
+  pendingCallId      = null
   bufferedCandidates = []
+  pendingOutgoingIce = []
 }
 ```
 
@@ -451,7 +545,9 @@ function cleanupCall() {
 | 2 | Caller | Get camera/mic access | `getUserMedia()` |
 | 3 | Caller | Create RTCPeerConnection + add tracks | `new RTCPeerConnection()` |
 | 4 | Caller | Initiate call | `emit call_initiate` |
+| 4a | Caller | Handle offline callee | `ack.event === 'call_unreachable'` → show offline UI |
 | 5 | Callee | Receive incoming call notification | `on call_incoming` |
+| 5a | Callee | Handle missed (no answer in 30s) | `on call_missed` → show missed UI |
 | 6 | Callee | Get media + create peer connection | `getUserMedia()` + `new RTCPeerConnection()` |
 | 7 | Callee | Join call room | `emit call_join` |
 | 8 | Caller | Create and send SDP offer | `on call_peer_joined` → `emit call_offer` |
@@ -459,7 +555,7 @@ function cleanupCall() {
 | 10 | Caller | Set remote answer | `on call_answer` |
 | 11 | Both | Exchange ICE candidates | `emit/on call_ice_candidate` |
 | 12 | Both | ICE connects — call is live | `oniceconnectionstatechange` |
-| 13 | Either | End call | `emit call:end` → `on call:ended` |
+| 13 | Either | End call | `emit call_end` → `on call_ended` |
 | 14 | Both | Cleanup media + peer connection | `cleanupCall()` |
 
 ---
@@ -470,10 +566,17 @@ function cleanupCall() {
 |------|--------|
 | Connect to `/call` namespace, not `/` | The gateway runs on its own namespace |
 | Only the caller emits `call_initiate` | One side creates the session; callee responds |
+| Never send your own user ID as `calleeId` | Server rejects self-calls with a `WsException` |
+| Handle `call_unreachable` in the ack | Server skips ringing if callee is offline; no `call_incoming` is sent |
+| Handle `call_missed` on both sides | Server fires this after 30s of no answer |
+| Only the callee emits `call_decline` | Server enforces this; callers use `call_cancel` |
+| Only the caller emits `call_cancel` | Server enforces this; callees use `call_decline` |
 | Acquire media before emitting `call_initiate` | Tracks must exist before the SDP offer is created |
+| Create RTCPeerConnection before emitting `call_initiate` | Closes the race where `call_peer_joined` arrives before the ack |
 | Add tracks to PC before SDP negotiation | Tracks added after `createOffer()` are not included |
 | Buffer ICE candidates until remote desc is set | `addIceCandidate()` fails without a remote description |
-| Recreate PC with server-provided ICE servers | Server may return TURN credentials; always use them |
+| Buffer outgoing ICE candidates until `callId` is known | Cannot emit `call_ice_candidate` without a `callId` |
+| Apply server ICE servers via `setConfiguration()`, not by recreating the PC | The PC has already started gathering candidates; recreating it loses them |
 | Always clean up after every call outcome | Avoids camera/mic indicator staying on in browser |
 | Do not try to resume after `call_failed` | Server has already torn down the session; start a new call |
 
@@ -490,9 +593,9 @@ function cleanupCall() {
 | `call_offer` | `{ callId, sdpType, sdp }` | Caller after `call_peer_joined` |
 | `call_answer` | `{ callId, sdpType, sdp }` | Callee after receiving offer |
 | `call_ice_candidate` | `{ callId, candidate, sdpMid, sdpMLineIndex }` | Both sides |
-| `call_decline` | `{ callId }` | Callee to decline |
-| `call_cancel` | `{ callId }` | Caller to cancel before answer |
-| `call:end` | `{ callId }` | Either side to end active call |
+| `call_decline` | `{ callId }` | Callee only — to decline an incoming call |
+| `call_cancel` | `{ callId }` | Caller only — to cancel before answer |
+| `call_end` | `{ callId }` | Either side — to end an active call |
 
 ### Events you receive (server → client)
 
@@ -503,11 +606,14 @@ function cleanupCall() {
 | `call_offer` | `{ callId, sdpType, sdp }` | Set remote desc + send answer (callee) |
 | `call_answer` | `{ callId, sdpType, sdp }` | Set remote description (caller) |
 | `call_ice_candidate` | `{ callId, candidate, sdpMid, sdpMLineIndex }` | Add to `RTCPeerConnection` (both) |
-| `call:ended` | `{ callId, endedBy, durationSeconds }` | Show summary, clean up (both) |
+| `call_ended` | `{ callId, endedBy, durationSeconds }` | Show summary, clean up (both) |
 | `call_decline` | `{ callId, calleeId }` | Show declined UI, clean up (caller) |
-| `call_cancelled` | `{ callId }` | Hide incoming UI (callee) |
+| `call_cancelled` | `{ callId, callerId }` | Hide incoming UI, clean up (callee) |
 | `call_failed` | `{ callId, reason }` | Show error, clean up (both) |
-| `call_error` | `{ message }` | Auth failure or participant violation |
+| `call_missed` | `{ callId, fullName }` | Show missed call UI, clean up (both) |
+| `call_error` | `{ message }` | Auth failure or participant/role violation |
+
+> 📌 **`call_unreachable`** is returned as an ack payload from `call_initiate` (not as a separate socket event). Check `ack.event === 'call_unreachable'` in the emit callback.
 
 ---
 

@@ -129,12 +129,14 @@
     font-size: 10px; font-weight: 700; padding: 2px 9px;
     border-radius: 20px; text-transform: uppercase; letter-spacing: 0.06em;
   }
-  .badge-idle     { background: var(--surface3); color: var(--muted); }
-  .badge-ringing  { background: #1f1a0a; color: var(--yellow); border: 1px solid #5a3a0a; animation: pulse 1s infinite; }
-  .badge-active   { background: #0f2a1a; color: var(--green); border: 1px solid #1a5a2a; }
-  .badge-ended    { background: #1a1a1a; color: var(--muted); border: 1px solid var(--border); }
-  .badge-declined { background: #2a1010; color: var(--red); border: 1px solid #5a1a1a; }
-  .badge-failed   { background: #2a1010; color: var(--red); border: 1px solid #5a1a1a; }
+  .badge-idle        { background: var(--surface3); color: var(--muted); }
+  .badge-ringing     { background: #1f1a0a; color: var(--yellow); border: 1px solid #5a3a0a; animation: pulse 1s infinite; }
+  .badge-active      { background: #0f2a1a; color: var(--green); border: 1px solid #1a5a2a; }
+  .badge-ended       { background: #1a1a1a; color: var(--muted); border: 1px solid var(--border); }
+  .badge-declined    { background: #2a1010; color: var(--red); border: 1px solid #5a1a1a; }
+  .badge-failed      { background: #2a1010; color: var(--red); border: 1px solid #5a1a1a; }
+  .badge-missed      { background: #1f1a0a; color: var(--yellow); border: 1px solid #5a3a0a; }
+  .badge-unreachable { background: #2a1010; color: var(--red); border: 1px solid #5a1a1a; }
 
   @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
 
@@ -284,7 +286,7 @@
 
 <div class="workspace">
 
-  <!-- ═══ USER A ═══ -->
+  <!-- USER A -->
   <div class="panel panel-a" id="panelA">
     <div class="panel-head">
       <div class="dot"></div>
@@ -299,7 +301,7 @@
       </div>
       <div class="field">
         <label>Callee ID</label>
-        <input type="text" id="calleeId" placeholder="User B's UUID" />
+        <input type="text" id="calleeId" placeholder="User B's UUID (cannot be your own)" />
       </div>
       <div class="btn-row">
         <button class="btn-a" onclick="connect('A')">Connect</button>
@@ -340,7 +342,7 @@
     </div>
   </div>
 
-  <!-- ═══ USER B ═══ -->
+  <!-- USER B -->
   <div class="panel panel-b" id="panelB">
     <div class="panel-head">
       <div class="dot"></div>
@@ -404,14 +406,14 @@ const streams    = { A: null, B: null };
 const micEnabled = { A: true, B: true };
 const camEnabled = { A: true, B: true };
 
-let currentCallId    = null;
-let pendingCallId    = null;
-let pendingIceQueue  = { A: [], B: [] };
-let pendingOutgoingIce = { A: [], B: [] }; // ICE candidates generated before we know the callId
-let peerJoinedPending  = { A: false, B: false }; // true if call_peer_joined arrived before currentCallId was set
-let callTimerInterval = null;
-let callStartTime    = null;
-let iceServersCache  = null;
+let currentCallId      = null;
+let pendingCallId      = null;
+let pendingIceQueue    = { A: [], B: [] };
+let pendingOutgoingIce = { A: [], B: [] };
+let peerJoinedPending  = { A: false, B: false };
+let callTimerInterval  = null;
+let callStartTime      = null;
+let iceServersCache    = null;
 
 function now() {
   return new Date().toLocaleTimeString('en-GB', { hour12: false });
@@ -464,12 +466,14 @@ function setStatus(u, state) {
 function setCallBadge(u, state) {
   const el  = document.getElementById('callBadge'+u);
   const map = {
-    idle:     'badge-idle Idle',
-    ringing:  'badge-ringing Ringing',
-    active:   'badge-active Active',
-    ended:    'badge-ended Ended',
-    declined: 'badge-declined Declined',
-    failed:   'badge-failed Failed',
+    idle:        'badge-idle Idle',
+    ringing:     'badge-ringing Ringing',
+    active:      'badge-active Active',
+    ended:       'badge-ended Ended',
+    declined:    'badge-declined Declined',
+    failed:      'badge-failed Failed',
+    missed:      'badge-missed Missed',
+    unreachable: 'badge-unreachable Unreachable',
   };
   const parts = (map[state] || 'badge-idle ' + state).split(' ');
   el.className   = `call-badge ${parts[0]}`;
@@ -573,13 +577,24 @@ function bindSocketEvents(u, socket) {
     document.getElementById('btnDeclineB').disabled = false;
   });
 
-  // NOTE: the server does NOT emit a separate 'call_initiated' event.
-  // The caller's ack arrives via the emit() callback in initiateCall().
+  // NEW: callee is offline — server returned call_unreachable instead of ringing
+  socket.on('call_unreachable', (data) => {
+    addLog(u, 'error', 'call_unreachable', data);
+    setCallBadge(u, 'unreachable');
+    setCallDisplay(u, null);
+    document.getElementById('btnCancelA').disabled = true;
+    closePeer(u);
+    currentCallId = null;
+    pendingCallId = null;
+    setTimeout(() => setCallBadge(u, 'idle'), 3000);
+  });
 
-  // ── FIX: call_peer_joined can arrive BEFORE the call_initiate ack
-  // (and therefore before pcs['A'] / currentCallId are set). If that
-  // happens, defer the offer until the ack handler creates the peer
-  // connection and sets currentCallId, then send it from there. ────
+  // NEW: ringing timed out — server marked the call missed after 30s with no answer
+  socket.on('call_missed', (data) => {
+    addLog(u, 'received', 'call_missed', data);
+    onCallTerminated(u, 'missed');
+  });
+
   socket.on('call_peer_joined', async (data) => {
     addLog(u, 'received', 'call_peer_joined', data);
     if (u === 'A') {
@@ -658,7 +673,6 @@ function bindSocketEvents(u, socket) {
     document.getElementById('btnDeclineB').disabled = true;
   });
 
-  // Server emits 'call_ended' from handleEnd
   socket.on('call_ended', (data) => {
     addLog(u, 'received', 'call_ended', data);
     onCallTerminated(u, 'ended');
@@ -680,9 +694,6 @@ function bindSocketEvents(u, socket) {
   });
 }
 
-// ── FIX: extracted so it can be invoked either immediately on
-// call_peer_joined or later (from the call_initiate ack handler) if
-// call_peer_joined arrived too early. ───────────────────────────────
 async function createAndSendOffer(u) {
   if (!pcs[u]) {
     addLog(u, 'error', 'Cannot create offer — no peer connection yet');
@@ -718,10 +729,6 @@ function createPeer(u, iceServers) {
   const pc = new RTCPeerConnection(config);
   pcs[u]   = pc;
 
-  // ── FIX: if we don't yet know the callId (e.g. pc created before the
-  // call_initiate ack arrives), queue the candidate instead of
-  // silently dropping it. Flushed via flushOutgoingIce() once the
-  // callId is known. ─────────────────────────────────────────────────
   pc.onicecandidate = (ev) => {
     if (!ev.candidate) return;
     const callId = currentCallId || pendingCallId;
@@ -768,9 +775,6 @@ function createPeer(u, iceServers) {
   return pc;
 }
 
-// ── FIX: send any ICE candidates that were generated before we knew
-// the callId. Call this as soon as currentCallId/pendingCallId becomes
-// available. ─────────────────────────────────────────────────────────
 function flushOutgoingIce(u) {
   const callId = currentCallId || pendingCallId;
   if (!callId || !sockets[u] || pendingOutgoingIce[u].length === 0) return;
@@ -804,10 +808,6 @@ function stopStream(u) {
   overlay.innerHTML = `<span class="cam-icon">🎥</span><span>Camera preview will appear here</span>`;
 }
 
-// ── FIX: only show the local <video> element if the stream actually
-// has a video track. Previously this unconditionally bound the stream
-// and hid the overlay, so an audio-only call (video: false) showed a
-// blank/black "camera preview" box instead of the audio-only badge. ──
 function attachLocalPreview(u) {
   if (!streams[u]) return;
   const localVid = document.getElementById('localVideo'+u);
@@ -855,28 +855,24 @@ function addTracksToPC(u) {
   }
 }
 
-// ── FIX: create the RTCPeerConnection SYNCHRONOUSLY, before/alongside
-// the call_initiate emit, using default STUN servers. This closes the
-// race where call_peer_joined arrives before the ack and pcs['A'] is
-// still null (the original bug — the offer-creation block was skipped
-// entirely, so B never got an offer and the call never went ACTIVE).
-//
-// Once the ack arrives with the real ICE server list (incl. TURN), we
-// upgrade the existing connection via setConfiguration() rather than
-// recreating it. If call_peer_joined already fired in the meantime
-// (peerJoinedPending), we send the deferred offer now. ───────────────
 async function initiateCall(type = 'video') {
   const s = sockets['A'];
   if (!s) { alert('Connect User A first'); return; }
+
   const calleeId = document.getElementById('calleeId').value.trim();
   if (!calleeId) { alert('Enter the Callee ID (User B UUID)'); return; }
 
-  // Grab the camera/mic and show the preview right away.
+  // NEW: self-call guard — mirrors the server-side check
+  const userAId = s.auth?.sub || '';
+  if (calleeId === userAId) {
+    alert('Cannot call yourself — enter a different user ID');
+    addLog('A', 'error', 'Self-call blocked', { calleeId });
+    return;
+  }
+
   const withVideo = (type === 'video');
   const stream = await getLocalMedia('A', withVideo);
 
-  // Create the peer connection now (default STUN) so it's ready
-  // regardless of how fast call_peer_joined comes back.
   peerJoinedPending['A'] = false;
   createPeer('A', null);
   if (stream) addTracksToPC('A');
@@ -891,6 +887,18 @@ async function initiateCall(type = 'video') {
     }
     addLog('A', 'received', 'call_initiate ack', ack);
 
+    // NEW: server returned call_unreachable — callee is offline
+    if (ack.event === 'call_unreachable') {
+      addLog('A', 'error', 'Callee is offline — call not created', { callId: ack.callId });
+      setCallBadge('A', 'unreachable');
+      setCallDisplay('A', null);
+      document.getElementById('btnCancelA').disabled = true;
+      closePeer('A');
+      currentCallId = null;
+      setTimeout(() => setCallBadge('A', 'idle'), 3000);
+      return;
+    }
+
     currentCallId   = ack.callId;
     iceServersCache = ack.iceServers;
 
@@ -898,7 +906,6 @@ async function initiateCall(type = 'video') {
     setCallDisplay('A', ack.callId);
     document.getElementById('btnCancelA').disabled = false;
 
-    // Upgrade ICE servers (e.g. TURN creds) on the already-created pc.
     if (ack.iceServers && pcs['A']) {
       try {
         pcs['A'].setConfiguration({ iceServers: ack.iceServers });
@@ -910,10 +917,8 @@ async function initiateCall(type = 'video') {
       }
     }
 
-    // Send any ICE candidates gathered before we had a callId.
     flushOutgoingIce('A');
 
-    // If call_peer_joined already arrived, send the offer now.
     if (peerJoinedPending['A']) {
       peerJoinedPending['A'] = false;
       createAndSendOffer('A');
@@ -932,13 +937,8 @@ async function answerCall() {
   const s = sockets['B'];
   if (!s) { alert('Connect User B first'); return; }
 
-  // Grab the camera/mic and show the preview right away.
   const stream = await getLocalMedia('B', true);
 
-  // ── FIX: create the peer connection synchronously (before the
-  // call_join emit), using the ICE servers received with
-  // call_incoming. This avoids the symmetric race where call_offer
-  // could arrive before pcs['B'] exists. ──────────────────────────────
   createPeer('B', iceServersCache);
   if (stream) addTracksToPC('B');
   flushOutgoingIce('B');
@@ -987,7 +987,7 @@ function declineCall() {
   pendingCallId = null;
 }
 
-// Backend listens for 'call_end' and emits 'call_ended' back to the room
+// Gateway listens on 'call_end' and broadcasts 'call_ended' back to the room
 function endCall(u) {
   const callId = currentCallId;
   if (!callId) return;
