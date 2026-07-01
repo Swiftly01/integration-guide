@@ -12,9 +12,10 @@
 - [Phase 4 — Socket Connection](#phase-4--socket-connection)
 - [Phase 5 — Entering a Chat Screen](#phase-5--entering-a-chat-screen)
 - [Phase 6 — Sending Messages](#phase-6--sending-messages)
-- [Phase 7 — Typing Indicators](#phase-7--typing-indicators)
-- [Phase 8 — Read Receipts](#phase-8--read-receipts)
-- [Phase 9 — In-App Notifications (No Push Required)](#phase-9--in-app-notifications-no-push-required)
+- [Phase 7 — Uploading Files & Media](#phase-7--uploading-files--media)
+- [Phase 8 — Typing Indicators](#phase-8--typing-indicators)
+- [Phase 9 — Read Receipts](#phase-9--read-receipts)
+- [Phase 10 — In-App Notifications (No Push Required)](#phase-10--in-app-notifications-no-push-required)
 - [Complete Flow Summary](#complete-flow-summary)
 - [Key Rules](#key-rules)
 - [Socket Event Reference](#socket-event-reference)
@@ -112,7 +113,7 @@ After creating the conversation, the app should:
 
 1. Store the returned `id` locally.
 2. Navigate the initiating user to the chat screen.
-3. User B will discover the conversation via their conversation list or the real-time `new_message` socket event (covered in [Phase 9](#phase-9--in-app-notifications-no-push-required)).
+3. User B will discover the conversation via their conversation list or the real-time `new_message` socket event (covered in [Phase 10](#phase-10--in-app-notifications-no-push-required)).
 
 ### Group Chats
 
@@ -229,7 +230,7 @@ socket.emit('leave_conversation', { conversationId })
 // Stops receiving room broadcasts for this conversation
 ```
 
-> **Why this matters:** Without joining the room, the client will not receive typing indicators or read receipts, even though it still receives `new_message` via the personal room (see [Phase 9](#phase-9--in-app-notifications-no-push-required)).
+> **Why this matters:** Without joining the room, the client will not receive typing indicators or read receipts, even though it still receives `new_message` via the personal room (see [Phase 10](#phase-10--in-app-notifications-no-push-required)).
 
 ---
 
@@ -278,7 +279,87 @@ socket.on('new_message', (message) => {
 
 ---
 
-## Phase 7 — Typing Indicators
+## Phase 7 — Uploading Files & Media
+
+Files (images, audio, or any other attachment) never travel over the socket. Upload the raw file over REST first, get back a hosted `url`, then send **that URL** as the message content through the normal messaging flow (Phase 6).
+
+### Upload File(s)
+
+```http
+POST /upload
+Authorization: Bearer <token>
+Content-Type: multipart/form-data
+
+files: <binary>            # field name "files" — up to 10 files, 10MB max each
+folder: "chat_images"      # optional — inferred from mimetype if omitted
+resourceType: "auto"       # optional — "auto" | "image" | "video" | "raw"
+```
+
+**Response:**
+```json
+{
+  "files": [
+    {
+      "url": "https://res.cloudinary.com/.../chat_images/abc123.jpg",
+      "publicId": "chat_images/abc123",
+      "format": "jpg",
+      "size": 204800
+    }
+  ]
+}
+```
+
+> Uploads are hosted on Cloudinary. Nothing about the response needs to be transformed — the `url` field is exactly what gets sent as message `content`.
+
+### Delete a File
+
+```http
+DELETE /upload?publicId=chat_images/abc123&resourceType=image
+Authorization: Bearer <token>
+```
+
+Returns `204 No Content`. Use this to clean up a file if the user cancels before sending, or removes an attachment.
+
+### Sending the Uploaded File as a Message
+
+Once you have the `url`, treat it exactly like Phase 6 — just swap the `content` for the URL and set `type` to match what was uploaded instead of `"text"`.
+
+```js
+async function sendFileMessage(file, conversationId) {
+  // 1. Upload the file over REST
+  const formData = new FormData()
+  formData.append('files', file)
+
+  const res = await fetch(`${API_URL}/upload`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+    body: formData,
+  })
+  const { files } = await res.json()
+  const { url } = files[0]
+
+  // 2. Send the URL as message content, same as any other message
+  socket.emit('send_message', {
+    conversationId,
+    content: url,  
+    type: 'image',    // or 'audio' / 'file' depending on the mimetype
+  })
+}
+```
+
+Nothing else changes downstream: the recipient still receives it through the standard `new_message` event (Phase 6). `message.content` will just be a URL instead of plain text — the UI decides how to render it (image, audio player, file/download link) based on `message.type`.
+
+### Deciding Which `type` to Send
+
+| Uploaded mimetype | `type` to send |
+|---|---|
+| `image/*` | `"image"` |
+| `audio/*` | `"audio"` |
+| anything else | `"file"` |
+
+---
+
+## Phase 8 — Typing Indicators
 
 Fire `typing_start` when the user begins typing. Fire `typing_stop` when they pause for ~2 seconds or submit the message. Debounce to avoid flooding the server.
 
@@ -323,7 +404,7 @@ socket.on('user_stopped_typing', ({ userId }) => {
 
 ---
 
-## Phase 8 — Read Receipts
+## Phase 9 — Read Receipts
 
 ```js
 // Emit when the user opens a conversation or scrolls to the bottom
@@ -338,7 +419,7 @@ socket.on('read_receipt', ({ conversationId, userId, readAt }) => {
 
 ---
 
-## Phase 9 — In-App Notifications (No Push Required)
+## Phase 10 — In-App Notifications (No Push Required)
 
 When a user is logged in and the socket is connected, they are automatically subscribed to their **personal room** on the server (`user:<userId>`). The server notifies this room whenever someone sends them a message — even if they have not joined the conversation room yet.
 
@@ -405,6 +486,7 @@ socket.on('new_message', (message) => {
 | `message_read` on screen entry and scroll to bottom | Keeps unread counts accurate for all participants |
 | Only the conversation creator calls `POST /conversations` | Other participants discover it via conversation list or `new_message` |
 | `type` field is required in `send_message` | `ValidationPipe` rejects the DTO without it; use `"text"` for standard messages |
+| Upload files via `POST /upload` first, then send the returned `url` as message `content` | Files live on Cloudinary; the DB only ever stores the URL string, never the binary |
 
 ---
 
