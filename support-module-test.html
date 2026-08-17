@@ -1,0 +1,1213 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Support Module Tester</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.5/socket.io.min.js"></script>
+    <style>
+      *,
+      *::before,
+      *::after {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+
+      :root {
+        --bg: #0f1117;
+        --surface: #1a1d27;
+        --surface2: #22263a;
+        --border: #2e3350;
+        --accent-a: #6c8cff;
+        --accent-b: #ff6ca8;
+        --rest: #35c9c1;
+        --text: #e8eaf6;
+        --muted: #7b82a8;
+        --success: #4caf50;
+        --warning: #ffa726;
+        --error: #ef5350;
+        --radius: 10px;
+        --font: "Segoe UI", system-ui, sans-serif;
+      }
+
+      body {
+        background: var(--bg);
+        color: var(--text);
+        font-family: var(--font);
+        font-size: 14px;
+        min-height: 100vh;
+        display: flex;
+        flex-direction: column;
+      }
+
+      header {
+        padding: 16px 24px;
+        border-bottom: 1px solid var(--border);
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        background: var(--surface);
+      }
+
+      header h1 {
+        font-size: 15px;
+        font-weight: 600;
+        letter-spacing: 0.04em;
+        color: var(--text);
+      }
+
+      header .badge {
+        font-size: 11px;
+        padding: 2px 8px;
+        border-radius: 20px;
+        background: var(--surface2);
+        color: var(--muted);
+        border: 1px solid var(--border);
+      }
+
+      .server-bar {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 12px 24px;
+        background: var(--surface);
+        border-bottom: 1px solid var(--border);
+      }
+
+      .server-bar label {
+        color: var(--muted);
+        font-size: 12px;
+        white-space: nowrap;
+      }
+      .server-bar input {
+        flex: 1;
+        background: var(--bg);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        color: var(--text);
+        padding: 6px 10px;
+        font-family: monospace;
+        font-size: 13px;
+      }
+      .server-bar input:focus {
+        outline: none;
+        border-color: var(--accent-a);
+      }
+      .server-bar .hint {
+        font-size: 11px;
+        color: var(--muted);
+      }
+
+      .main {
+        flex: 1;
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 0;
+        min-height: 0;
+      }
+
+      .panel {
+        border-right: 1px solid var(--border);
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+      }
+      .panel:last-child {
+        border-right: none;
+      }
+
+      .panel-header {
+        padding: 14px 16px 10px;
+        border-bottom: 1px solid var(--border);
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        flex-shrink: 0;
+      }
+
+      .panel-header .user-dot {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        flex-shrink: 0;
+      }
+      .panel-a .user-dot {
+        background: var(--accent-a);
+      }
+      .panel-b .user-dot {
+        background: var(--accent-b);
+      }
+
+      .panel-header h2 {
+        font-size: 13px;
+        font-weight: 600;
+      }
+      .panel-header .sub {
+        font-size: 11px;
+        color: var(--muted);
+        flex: 1;
+      }
+
+      .status-pill {
+        font-size: 11px;
+        padding: 2px 8px;
+        border-radius: 20px;
+        font-weight: 500;
+        transition: all 0.2s;
+      }
+      .status-pill.disconnected {
+        background: #2a1a1a;
+        color: var(--error);
+        border: 1px solid #5a2020;
+      }
+      .status-pill.connected {
+        background: #1a2e1a;
+        color: var(--success);
+        border: 1px solid #205a20;
+      }
+      .status-pill.connecting {
+        background: #2a2a1a;
+        color: var(--warning);
+        border: 1px solid #5a4a20;
+      }
+
+      .panel-scroll {
+        flex: 1;
+        overflow-y: auto;
+        min-height: 0;
+        display: flex;
+        flex-direction: column;
+      }
+
+      /* Config / action sections */
+      .config-section,
+      .actions-section {
+        flex-shrink: 0;
+        padding: 10px 16px;
+        border-bottom: 1px solid var(--border);
+        display: flex;
+        flex-direction: column;
+        gap: 7px;
+      }
+
+      .divider {
+        font-size: 10px;
+        text-transform: uppercase;
+        letter-spacing: 0.1em;
+        color: var(--muted);
+        padding: 6px 0 2px;
+      }
+      .divider:first-child {
+        padding-top: 0;
+      }
+
+      .field-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .field-row label {
+        font-size: 11px;
+        color: var(--muted);
+        width: 78px;
+        flex-shrink: 0;
+      }
+
+      .field-row input,
+      .field-row select,
+      .field-row textarea {
+        flex: 1;
+        background: var(--bg);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        color: var(--text);
+        padding: 6px 10px;
+        font-family: var(--font);
+        font-size: 12px;
+        resize: none;
+      }
+      .field-row input:focus,
+      .field-row select:focus,
+      .field-row textarea:focus {
+        outline: none;
+        border-color: var(--accent-a);
+      }
+      .panel-b .field-row input:focus,
+      .panel-b .field-row select:focus,
+      .panel-b .field-row textarea:focus {
+        border-color: var(--accent-b);
+      }
+
+      .btn-row,
+      .actions-row {
+        display: flex;
+        gap: 6px;
+        flex-wrap: wrap;
+      }
+
+      button {
+        padding: 6px 12px;
+        border-radius: 6px;
+        border: none;
+        font-size: 12px;
+        font-weight: 500;
+        cursor: pointer;
+        transition:
+          opacity 0.15s,
+          transform 0.1s;
+        font-family: var(--font);
+      }
+      button:active {
+        transform: scale(0.97);
+      }
+      button:disabled {
+        opacity: 0.4;
+        cursor: not-allowed;
+      }
+
+      .btn-primary-a {
+        background: var(--accent-a);
+        color: #fff;
+      }
+      .btn-primary-b {
+        background: var(--accent-b);
+        color: #fff;
+      }
+      .btn-secondary {
+        background: var(--surface2);
+        color: var(--text);
+        border: 1px solid var(--border);
+      }
+      .btn-danger {
+        background: #3a1a1a;
+        color: var(--error);
+        border: 1px solid #5a2020;
+      }
+      .btn-rest {
+        background: #123332;
+        color: var(--rest);
+        border: 1px solid #1d5a56;
+      }
+
+      /* Events log */
+      .events-log {
+        flex: 1;
+        overflow-y: auto;
+        padding: 12px 16px;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        min-height: 120px;
+      }
+
+      .event-entry {
+        display: flex;
+        gap: 8px;
+        align-items: flex-start;
+        padding: 7px 10px;
+        border-radius: 7px;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        animation: slideIn 0.15s ease;
+      }
+
+      @keyframes slideIn {
+        from {
+          opacity: 0;
+          transform: translateY(4px);
+        }
+        to {
+          opacity: 1;
+          transform: translateY(0);
+        }
+      }
+
+      .event-entry.sent {
+        border-left: 3px solid var(--accent-a);
+      }
+      .panel-b .event-entry.sent {
+        border-left: 3px solid var(--accent-b);
+      }
+      .event-entry.received {
+        border-left: 3px solid var(--success);
+      }
+      .event-entry.error {
+        border-left: 3px solid var(--error);
+        background: #1e1010;
+      }
+      .event-entry.system {
+        border-left: 3px solid var(--muted);
+      }
+      .event-entry.rest {
+        border-left: 3px solid var(--rest);
+      }
+
+      .event-tag {
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.06em;
+        padding: 1px 5px;
+        border-radius: 4px;
+        flex-shrink: 0;
+        margin-top: 1px;
+        white-space: nowrap;
+      }
+
+      .tag-sent {
+        background: #1a2040;
+        color: var(--accent-a);
+      }
+      .panel-b .tag-sent {
+        background: #2a1025;
+        color: var(--accent-b);
+      }
+      .tag-received {
+        background: #1a2e1a;
+        color: var(--success);
+      }
+      .tag-error {
+        background: #2a1010;
+        color: var(--error);
+      }
+      .tag-system {
+        background: var(--surface2);
+        color: var(--muted);
+      }
+      .tag-rest {
+        background: #123332;
+        color: var(--rest);
+      }
+
+      .event-content {
+        flex: 1;
+        min-width: 0;
+      }
+
+      .event-name {
+        font-size: 11px;
+        font-weight: 600;
+        color: var(--text);
+        margin-bottom: 3px;
+      }
+
+      .event-data {
+        font-family: monospace;
+        font-size: 11px;
+        color: var(--muted);
+        white-space: pre-wrap;
+        word-break: break-all;
+        line-height: 1.5;
+      }
+
+      .event-time {
+        font-size: 10px;
+        color: var(--muted);
+        flex-shrink: 0;
+        margin-top: 2px;
+      }
+
+      .empty-state {
+        color: var(--muted);
+        font-size: 12px;
+        text-align: center;
+        padding: 24px 0;
+      }
+
+      /* Message area */
+      .send-area {
+        padding: 12px 16px;
+        border-top: 1px solid var(--border);
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        flex-shrink: 0;
+      }
+
+      .send-area textarea {
+        background: var(--bg);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        color: var(--text);
+        padding: 6px 10px;
+        font-size: 12px;
+        resize: none;
+        height: 48px;
+        font-family: var(--font);
+      }
+      .send-area textarea:focus {
+        outline: none;
+        border-color: var(--accent-a);
+      }
+      .panel-b .send-area textarea:focus {
+        border-color: var(--accent-b);
+      }
+
+      .ticket-id-display {
+        font-family: monospace;
+        font-size: 11px;
+        color: var(--rest);
+        background: var(--surface2);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        padding: 5px 8px;
+        overflow-x: auto;
+        white-space: nowrap;
+      }
+
+      /* Scrollbar */
+      ::-webkit-scrollbar {
+        width: 5px;
+      }
+      ::-webkit-scrollbar-track {
+        background: transparent;
+      }
+      ::-webkit-scrollbar-thumb {
+        background: var(--border);
+        border-radius: 10px;
+      }
+
+      details.collapsible {
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        background: var(--surface);
+      }
+      details.collapsible summary {
+        cursor: pointer;
+        padding: 6px 10px;
+        font-size: 11px;
+        color: var(--muted);
+        list-style: none;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+      details.collapsible summary::-webkit-details-marker {
+        display: none;
+      }
+      details.collapsible summary::before {
+        content: "▸";
+        font-size: 10px;
+      }
+      details.collapsible[open] summary::before {
+        content: "▾";
+      }
+      details.collapsible .inner {
+        padding: 8px 10px 10px;
+        display: flex;
+        flex-direction: column;
+        gap: 7px;
+        border-top: 1px solid var(--border);
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>🎫 Support Module Tester</h1>
+      <span class="badge">REST + Socket.IO</span>
+      <span class="badge">Requester ⇄ Admin simulation</span>
+    </header>
+
+    <div class="server-bar">
+      <label>Server URL</label>
+      <input
+        type="text"
+        id="serverUrl"
+        value="http://localhost:3000"
+        placeholder="http://localhost:3000"
+      />
+      <span class="hint"
+        >Used for both REST calls and the socket connection</span
+      >
+    </div>
+
+    <div class="main">
+      <!-- REQUESTER -->
+      <div class="panel panel-a" id="panelA">
+        <div class="panel-header">
+          <div class="user-dot"></div>
+          <h2>Requester</h2>
+          <span class="sub">patient / provider</span>
+          <span class="status-pill disconnected" id="statusA"
+            >Disconnected</span
+          >
+        </div>
+
+        <div class="panel-scroll">
+          <div class="config-section">
+            <div class="field-row">
+              <label>JWT Token</label>
+              <input
+                type="text"
+                id="tokenA"
+                placeholder="Paste Bearer token or raw JWT…"
+              />
+            </div>
+            <div class="btn-row">
+              <button class="btn-primary-a" onclick="connect('A')">
+                Connect socket
+              </button>
+              <button
+                class="btn-danger"
+                onclick="disconnect('A')"
+                id="disconnectA"
+                disabled
+              >
+                Disconnect
+              </button>
+              <button class="btn-secondary" onclick="clearLog('A')">
+                Clear log
+              </button>
+            </div>
+          </div>
+
+          <div class="actions-section">
+            <div class="divider">Current ticket</div>
+            <div class="field-row">
+              <label>Ticket ID</label>
+              <input
+                type="text"
+                id="ticketIdA"
+                placeholder="Auto-filled on create, or paste one"
+              />
+            </div>
+            <div class="btn-row">
+              <button class="btn-rest" onclick="getTicket('A')">
+                Get ticket
+              </button>
+              <button class="btn-rest" onclick="getMessages('A')">
+                Get messages
+              </button>
+              <button class="btn-secondary" onclick="listMyTickets('A')">
+                My tickets
+              </button>
+            </div>
+
+            <details class="collapsible">
+              <summary>Create a new ticket</summary>
+              <div class="inner">
+                <div class="field-row">
+                  <label>Subject</label>
+                  <input
+                    type="text"
+                    id="subjectA"
+                    placeholder="Provider did not join consultation"
+                  />
+                </div>
+                <div class="field-row">
+                  <label>Description</label>
+                  <textarea
+                    id="descriptionA"
+                    placeholder="At least 10 characters…"
+                  ></textarea>
+                </div>
+                <div class="field-row">
+                  <label>Category</label>
+                  <select id="categoryA">
+                    <option value="">(default: other)</option>
+                    <option value="consultation">consultation</option>
+                    <option value="payment">payment</option>
+                    <option value="payout">payout</option>
+                    <option value="order">order</option>
+                    <option value="wallet">wallet</option>
+                    <option value="account">account</option>
+                    <option value="pricing">pricing</option>
+                    <option value="other">other</option>
+                  </select>
+                </div>
+                <div class="field-row">
+                  <label>Priority</label>
+                  <select id="priorityA">
+                    <option value="">(default: medium)</option>
+                    <option value="low">low</option>
+                    <option value="medium">medium</option>
+                    <option value="high">high</option>
+                    <option value="urgent">urgent</option>
+                  </select>
+                </div>
+                <div class="btn-row">
+                  <button class="btn-primary-a" onclick="createTicket('A')">
+                    Create ticket
+                  </button>
+                </div>
+              </div>
+            </details>
+          </div>
+
+          <div class="events-log" id="logA">
+            <div class="empty-state">Connect and act to see events here</div>
+          </div>
+        </div>
+
+        <div class="send-area">
+          <textarea
+            id="msgA"
+            placeholder="Reply on the current ticket…"
+          ></textarea>
+          <div class="actions-row">
+            <button class="btn-primary-a" onclick="sendMessage('A')">
+              Send reply
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- ADMIN -->
+      <div class="panel panel-b" id="panelB">
+        <div class="panel-header">
+          <div class="user-dot"></div>
+          <h2>Admin</h2>
+          <span class="sub">ADMIN / SUPER_ADMIN</span>
+          <span class="status-pill disconnected" id="statusB"
+            >Disconnected</span
+          >
+        </div>
+
+        <div class="panel-scroll">
+          <div class="config-section">
+            <div class="field-row">
+              <label>JWT Token</label>
+              <input
+                type="text"
+                id="tokenB"
+                placeholder="Paste Bearer token or raw JWT…"
+              />
+            </div>
+            <div class="btn-row">
+              <button class="btn-primary-b" onclick="connect('B')">
+                Connect + join queue
+              </button>
+              <button
+                class="btn-danger"
+                onclick="disconnect('B')"
+                id="disconnectB"
+                disabled
+              >
+                Disconnect
+              </button>
+              <button class="btn-secondary" onclick="clearLog('B')">
+                Clear log
+              </button>
+            </div>
+          </div>
+
+          <div class="actions-section">
+            <div class="btn-row">
+              <button class="btn-rest" onclick="getSummary()">
+                Get summary
+              </button>
+              <button class="btn-rest" onclick="listTickets()">
+                List queue
+              </button>
+            </div>
+            <div class="field-row">
+              <label>Filter status</label>
+              <select id="filterStatusB">
+                <option value="">(any)</option>
+                <option value="open">open</option>
+                <option value="in_progress">in_progress</option>
+                <option value="resolved">resolved</option>
+                <option value="closed">closed</option>
+              </select>
+            </div>
+            <div class="field-row">
+              <label>Filter priority</label>
+              <select id="filterPriorityB">
+                <option value="">(any)</option>
+                <option value="low">low</option>
+                <option value="medium">medium</option>
+                <option value="high">high</option>
+                <option value="urgent">urgent</option>
+              </select>
+            </div>
+
+            <div class="divider">Current ticket</div>
+            <div class="field-row">
+              <label>Ticket ID</label>
+              <input
+                type="text"
+                id="ticketIdB"
+                placeholder="Auto-filled from queue/create, or paste one"
+              />
+            </div>
+            <div class="btn-row">
+              <button class="btn-rest" onclick="getTicket('B')">
+                Get ticket
+              </button>
+              <button class="btn-rest" onclick="getActivity()">
+                Get activity
+              </button>
+            </div>
+
+            <details class="collapsible">
+              <summary>Assign</summary>
+              <div class="inner">
+                <div class="field-row">
+                  <label>Admin ID</label>
+                  <input
+                    type="text"
+                    id="assignAdminId"
+                    placeholder="Leave blank to unassign"
+                  />
+                </div>
+                <div class="btn-row">
+                  <button class="btn-primary-b" onclick="assignTicket()">
+                    Assign
+                  </button>
+                  <button class="btn-secondary" onclick="assignToMe()">
+                    Assign to me
+                  </button>
+                  <button class="btn-danger" onclick="unassignTicket()">
+                    Unassign
+                  </button>
+                </div>
+              </div>
+            </details>
+
+            <details class="collapsible">
+              <summary>Change status</summary>
+              <div class="inner">
+                <div class="field-row">
+                  <label>Status</label>
+                  <select id="statusSelect">
+                    <option value="open">open</option>
+                    <option value="in_progress">in_progress</option>
+                    <option value="resolved">resolved</option>
+                    <option value="closed">closed</option>
+                  </select>
+                </div>
+                <div class="field-row">
+                  <label>Res. note</label>
+                  <input
+                    type="text"
+                    id="resolutionNote"
+                    placeholder="Required if resolving"
+                  />
+                </div>
+                <div class="btn-row">
+                  <button class="btn-primary-b" onclick="updateStatus()">
+                    Update status
+                  </button>
+                </div>
+              </div>
+            </details>
+
+            <details class="collapsible">
+              <summary>Change priority</summary>
+              <div class="inner">
+                <div class="field-row">
+                  <label>Priority</label>
+                  <select id="prioritySelect">
+                    <option value="low">low</option>
+                    <option value="medium" selected>medium</option>
+                    <option value="high">high</option>
+                    <option value="urgent">urgent</option>
+                  </select>
+                </div>
+                <div class="btn-row">
+                  <button class="btn-primary-b" onclick="updatePriority()">
+                    Update priority
+                  </button>
+                </div>
+              </div>
+            </details>
+          </div>
+
+          <div class="events-log" id="logB">
+            <div class="empty-state">Connect and act to see events here</div>
+          </div>
+        </div>
+
+        <div class="send-area">
+          <textarea
+            id="msgB"
+            placeholder="Reply on the current ticket…"
+          ></textarea>
+          <div class="actions-row">
+            <button class="btn-primary-b" onclick="sendMessage('B')">
+              Send reply
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      const sockets = { A: null, B: null };
+      const ticketIds = { A: "", B: "" };
+
+      // ─── Helpers ────────────────────────────────────────────────────────
+
+      function now() {
+        return new Date().toLocaleTimeString("en-GB", { hour12: false });
+      }
+
+      function escHtml(s) {
+        return s
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;");
+      }
+
+      function addLog(user, type, name, data) {
+        const log = document.getElementById("log" + user);
+        const empty = log.querySelector(".empty-state");
+        if (empty) empty.remove();
+
+        const tagMap = {
+          sent: "SENT",
+          received: "RECV",
+          error: "ERR",
+          system: "SYS",
+          rest: "REST",
+        };
+
+        const entry = document.createElement("div");
+        entry.className = `event-entry ${type}`;
+
+        const dataStr =
+          typeof data === "object"
+            ? JSON.stringify(data, null, 2)
+            : String(data ?? "");
+
+        entry.innerHTML = `
+    <span class="event-tag tag-${type}">${tagMap[type] || type}</span>
+    <div class="event-content">
+      <div class="event-name">${escHtml(name)}</div>
+      ${dataStr ? `<div class="event-data">${escHtml(dataStr)}</div>` : ""}
+    </div>
+    <span class="event-time">${now()}</span>
+  `;
+
+        log.appendChild(entry);
+        log.scrollTop = log.scrollHeight;
+      }
+
+      function setStatus(user, state) {
+        const pill = document.getElementById("status" + user);
+        pill.textContent = state.charAt(0).toUpperCase() + state.slice(1);
+        pill.className = `status-pill ${state}`;
+        document.getElementById("disconnect" + user).disabled =
+          state !== "connected";
+      }
+
+      function clearLog(user) {
+        const log = document.getElementById("log" + user);
+        log.innerHTML = '<div class="empty-state">Log cleared</div>';
+      }
+
+      function apiBase() {
+        return document.getElementById("serverUrl").value.trim();
+      }
+
+      function token(user) {
+        return document.getElementById("token" + user).value.trim();
+      }
+
+      function setTicketId(user, id) {
+        ticketIds[user] = id;
+        document.getElementById("ticketId" + user).value = id;
+      }
+
+      function currentTicketId(user) {
+        const id = document.getElementById("ticketId" + user).value.trim();
+        ticketIds[user] = id;
+        return id;
+      }
+
+      /** Decodes the (unverified) payload of a JWT just to read `sub` for
+       *  convenience buttons like "assign to me" - never trust this for
+       *  anything security-relevant, it's a test page. */
+      function decodeJwtSub(raw) {
+        try {
+          const jwt = raw.startsWith("Bearer ") ? raw.slice(7) : raw;
+          const payload = JSON.parse(atob(jwt.split(".")[1]));
+          return payload.sub || payload.id || null;
+        } catch {
+          return null;
+        }
+      }
+
+      // ─── REST helper ────────────────────────────────────────────────────
+
+      async function api(user, method, path, body) {
+        const url = apiBase() + path;
+        addLog(user, "sent", `${method} ${path}`, body ?? null);
+
+        try {
+          const res = await fetch(url, {
+            method,
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${token(user).replace(/^Bearer\s+/i, "")}`,
+            },
+            body: body !== undefined ? JSON.stringify(body) : undefined,
+          });
+
+          let data = null;
+          const text = await res.text();
+          try {
+            data = text ? JSON.parse(text) : null;
+          } catch {
+            data = text;
+          }
+
+          if (!res.ok) {
+            addLog(user, "error", `${res.status} ${method} ${path}`, data);
+            return null;
+          }
+
+          addLog(user, "rest", `${res.status} ${method} ${path}`, data);
+          return data;
+        } catch (err) {
+          addLog(user, "error", `Network error: ${method} ${path}`, {
+            message: err.message,
+            hint: "Check the server URL and that CORS is enabled for this origin",
+          });
+          return null;
+        }
+      }
+
+      // ─── Socket connection ──────────────────────────────────────────────
+
+      function connect(user) {
+        const t = token(user);
+        if (!t) {
+          alert("Please paste a JWT token for " + (user === "A" ? "the requester" : "the admin"));
+          return;
+        }
+
+        if (sockets[user]) {
+          sockets[user].disconnect();
+          sockets[user] = null;
+        }
+
+        const url = apiBase();
+        setStatus(user, "connecting");
+        addLog(user, "system", "Connecting…", { url });
+
+        const socket = io(url, {
+          auth: { token: t },
+          transports: ["websocket", "polling"],
+          reconnection: false,
+        });
+
+        sockets[user] = socket;
+        bindEvents(user, socket);
+      }
+
+      function disconnect(user) {
+        if (sockets[user]) {
+          sockets[user].disconnect();
+          sockets[user] = null;
+        }
+      }
+
+      function bindEvents(user, socket) {
+        socket.on("connect", () => {
+          setStatus(user, "connected");
+          addLog(user, "system", "Connected", { socketId: socket.id });
+
+          // Admin auto-joins the shared support queue room on connect
+          if (user === "B") {
+            addLog(user, "sent", "join_support_queue", null);
+            socket.emit("join_support_queue", (ack) => {
+              if (ack) addLog(user, "received", "ack: join_support_queue", ack);
+            });
+          }
+        });
+
+        socket.on("disconnect", (reason) => {
+          setStatus(user, "disconnected");
+          addLog(user, "system", "Disconnected", { reason });
+          sockets[user] = null;
+        });
+
+        socket.on("connect_error", (err) => {
+          setStatus(user, "disconnected");
+          addLog(user, "error", "Connection error", { message: err.message });
+          sockets[user] = null;
+        });
+
+        socket.on("error", (data) => {
+          addLog(user, "error", "Server error", data);
+        });
+
+        // ── Events emitted by SupportService via ChatGateway ──────────
+        socket.on("new_message", (data) => {
+          addLog(user, "received", "new_message", data);
+        });
+
+        socket.on("ticket_created", (data) => {
+          addLog(user, "received", "ticket_created", data);
+        });
+
+        socket.on("ticket_updated", (data) => {
+          addLog(user, "received", "ticket_updated", data);
+        });
+
+        // Catch-all for anything else the server emits (e.g. general chat events)
+        const knownEvents = new Set([
+          "connect",
+          "disconnect",
+          "connect_error",
+          "error",
+          "new_message",
+          "ticket_created",
+          "ticket_updated",
+        ]);
+        socket.onAny((event, ...args) => {
+          if (!knownEvents.has(event)) {
+            addLog(user, "received", event, args[0] ?? null);
+          }
+        });
+      }
+
+      // ─── Requester actions ──────────────────────────────────────────────
+
+      async function createTicket(user) {
+        const subject = document.getElementById("subjectA").value.trim();
+        const description = document
+          .getElementById("descriptionA")
+          .value.trim();
+        const category = document.getElementById("categoryA").value;
+        const priority = document.getElementById("priorityA").value;
+
+        if (!subject || !description) {
+          alert("Subject and description are required");
+          return;
+        }
+
+        const body = { subject, description };
+        if (category) body.category = category;
+        if (priority) body.priority = priority;
+
+        const ticket = await api(user, "POST", "/support/tickets", body);
+        if (ticket?.id) {
+          setTicketId("A", ticket.id);
+          setTicketId("B", ticket.id); // convenience: prefill the admin panel too
+        }
+      }
+
+      async function listMyTickets(user) {
+        await api(user, "GET", "/support/tickets?page=1&limit=20");
+      }
+
+      async function getTicket(user) {
+        const id = currentTicketId(user);
+        if (!id) return alert("Enter a ticket ID first");
+        const base = user === "A" ? "/support/tickets" : "/admin/support/tickets";
+        await api(user, "GET", `${base}/${id}`);
+      }
+
+      async function getMessages(user) {
+        const id = currentTicketId(user);
+        if (!id) return alert("Enter a ticket ID first");
+        await api(user, "GET", `/support/tickets/${id}/messages?page=1&limit=20`);
+      }
+
+      async function sendMessage(user) {
+        const id = currentTicketId(user);
+        if (!id) return alert("Enter a ticket ID first");
+        const textarea = document.getElementById("msg" + user);
+        const content = textarea.value.trim();
+        if (!content) return alert("Type a reply first");
+
+        const message = await api(
+          user,
+          "POST",
+          `/support/tickets/${id}/messages`,
+          { content },
+        );
+        if (message) textarea.value = "";
+      }
+
+      // ─── Admin actions ──────────────────────────────────────────────────
+
+      async function getSummary() {
+        await api("B", "GET", "/admin/support/summary");
+      }
+
+      async function listTickets() {
+        const status = document.getElementById("filterStatusB").value;
+        const priority = document.getElementById("filterPriorityB").value;
+        const params = new URLSearchParams({ page: "1", limit: "20" });
+        if (status) params.set("status", status);
+        if (priority) params.set("priority", priority);
+
+        const result = await api("B", "GET", `/admin/support/tickets?${params}`);
+        // Convenience: prefill the ticket ID field with the first result
+        if (result?.items?.[0]?.id) {
+          setTicketId("B", result.items[0].id);
+        }
+      }
+
+      async function getActivity() {
+        const id = currentTicketId("B");
+        if (!id) return alert("Enter a ticket ID first");
+        await api("B", "GET", `/admin/support/tickets/${id}/activity`);
+      }
+
+      async function assignTicket() {
+        const id = currentTicketId("B");
+        if (!id) return alert("Enter a ticket ID first");
+        const adminId = document.getElementById("assignAdminId").value.trim();
+        const body = adminId ? { adminId } : {};
+        await api("B", "PATCH", `/admin/support/tickets/${id}/assign`, body);
+      }
+
+      function assignToMe() {
+        const sub = decodeJwtSub(token("B"));
+        if (!sub) return alert("Couldn't read your admin ID from the JWT");
+        document.getElementById("assignAdminId").value = sub;
+        assignTicket();
+      }
+
+      async function unassignTicket() {
+        const id = currentTicketId("B");
+        if (!id) return alert("Enter a ticket ID first");
+        await api("B", "PATCH", `/admin/support/tickets/${id}/assign`, {});
+      }
+
+      async function updateStatus() {
+        const id = currentTicketId("B");
+        if (!id) return alert("Enter a ticket ID first");
+        const status = document.getElementById("statusSelect").value;
+        const resolutionNote = document
+          .getElementById("resolutionNote")
+          .value.trim();
+
+        const body = { status };
+        if (status === "resolved") {
+          if (!resolutionNote) {
+            alert("A resolution note is required when resolving a ticket");
+            return;
+          }
+          body.resolutionNote = resolutionNote;
+        }
+
+        await api("B", "PATCH", `/admin/support/tickets/${id}/status`, body);
+      }
+
+      async function updatePriority() {
+        const id = currentTicketId("B");
+        if (!id) return alert("Enter a ticket ID first");
+        const priority = document.getElementById("prioritySelect").value;
+        await api("B", "PATCH", `/admin/support/tickets/${id}/priority`, {
+          priority,
+        });
+      }
+
+      // Enter to send reply, Shift+Enter for newline
+      ["A", "B"].forEach((user) => {
+        document.getElementById("msg" + user).addEventListener("keydown", (e) => {
+          if (e.key === "Enter" && !e.shiftKey) {
+            e.preventDefault();
+            sendMessage(user);
+          }
+        });
+      });
+    </script>
+  </body>
+</html>
