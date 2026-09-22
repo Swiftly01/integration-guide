@@ -255,6 +255,39 @@
     font-size: 9px; text-transform: uppercase; letter-spacing: 0.1em;
     color: var(--muted); margin-bottom: 4px;
   }
+
+  /* Policy error banner — surfaces the actual refusal reason from
+     CallEligibilityService (via ChatPolicyException / WsPolicyExceptionFilter)
+     instead of a generic WsException string. */
+  .policy-banner {
+    display: none;
+    flex-shrink: 0;
+    margin: 8px 14px 0;
+    padding: 9px 11px;
+    border-radius: 8px;
+    background: #1f0a0a;
+    border: 1px solid #4a1010;
+    animation: fadeIn 0.12s ease;
+  }
+  .policy-banner.show { display: flex; flex-direction: column; gap: 6px; }
+  .policy-banner .pb-head { display: flex; align-items: flex-start; gap: 7px; }
+  .policy-banner .pb-icon { font-size: 13px; flex-shrink: 0; margin-top: 1px; }
+  .policy-banner .pb-message { flex: 1; font-size: 11.5px; line-height: 1.5; color: var(--text); }
+  .policy-banner .pb-close {
+    background: transparent; border: none; color: var(--muted);
+    font-size: 13px; cursor: pointer; padding: 0 2px; flex-shrink: 0;
+  }
+  .policy-banner .pb-chips { display: flex; flex-wrap: wrap; gap: 5px; }
+  .pb-chip {
+    font-size: 9px; font-weight: 700; padding: 2px 7px; border-radius: 20px;
+    background: #170808; color: var(--red); border: 1px solid #4a1414;
+    font-family: var(--mono); letter-spacing: 0.03em;
+  }
+  .pb-chip.pb-chip-muted { background: var(--surface2); color: var(--muted); border: 1px solid var(--border); }
+  .pb-chip.pb-chip-cause { background: #1f1a0a; color: var(--yellow); border: 1px solid #4a3a0a; }
+
+  .log-entry.policy { border-left: 3px solid var(--red); background: #140808; }
+  .tag-policy { background: #2a0808; color: var(--red); }
 </style>
 </head>
 <body>
@@ -292,6 +325,15 @@
       <div class="dot"></div>
       <h2>User A — Caller</h2>
       <span class="status-chip chip-off" id="statusChipA">Disconnected</span>
+    </div>
+
+    <div class="policy-banner" id="policyBannerA">
+      <div class="pb-head">
+        <span class="pb-icon">🚫</span>
+        <span class="pb-message" id="policyMessageA"></span>
+        <button class="pb-close" onclick="hidePolicyBanner('A')">✕</button>
+      </div>
+      <div class="pb-chips" id="policyChipsA"></div>
     </div>
 
     <div class="config-strip">
@@ -348,6 +390,15 @@
       <div class="dot"></div>
       <h2>User B — Callee</h2>
       <span class="status-chip chip-off" id="statusChipB">Disconnected</span>
+    </div>
+
+    <div class="policy-banner" id="policyBannerB">
+      <div class="pb-head">
+        <span class="pb-icon">🚫</span>
+        <span class="pb-message" id="policyMessageB"></span>
+        <button class="pb-close" onclick="hidePolicyBanner('B')">✕</button>
+      </div>
+      <div class="pb-chips" id="policyChipsB"></div>
     </div>
 
     <div class="config-strip">
@@ -424,7 +475,7 @@ function addLog(user, type, name, data) {
   const empty = log.querySelector('.empty');
   if (empty) empty.remove();
 
-  const tags  = { sent:'EMIT', received:'RECV', error:'ERR', system:'SYS', webrtc:'RTC' };
+  const tags  = { sent:'EMIT', received:'RECV', error:'ERR', system:'SYS', webrtc:'RTC', policy:'POLICY' };
   const entry = document.createElement('div');
   entry.className = `log-entry ${type}`;
   const dataStr = data !== undefined && data !== null
@@ -445,6 +496,98 @@ function addLog(user, type, name, data) {
 
 function escHtml(s) {
   return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+// ─── Policy errors (CallEligibilityService / WsPolicyExceptionFilter) ─────────────
+//
+// call_initiate now runs through the same eligibility check as chat before
+// it ever touches reachability, so a refused call arrives as a
+// ChatPolicyException with code CALL_NOT_ALLOWED and a `cause` naming the
+// underlying chat reason (CHAT_WINDOW_EXPIRED, CHAT_NO_APPOINTMENT, ...).
+// WsPolicyExceptionFilter forwards the full payload instead of a bare
+// WsException string, in one of two shapes:
+//
+//   1. The emit() ack callback:  { success: false, error: { code, message, ... } }
+//   2. The 'exception' event:    { code, message, ... }  (flat)
+function extractPolicyError(payload) {
+  if (!payload || typeof payload !== 'object') return null;
+  if (payload.success === false && payload.error) return payload.error;
+  if (payload.code && payload.message) return payload;
+  return null;
+}
+
+function formatDateTime(iso) {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return iso;
+  return d.toLocaleString('en-GB', {
+    day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit',
+  });
+}
+
+function formatRelative(iso) {
+  if (!iso) return null;
+  const then = new Date(iso).getTime();
+  if (isNaN(then)) return null;
+  const diffMs = Date.now() - then;
+  const future = diffMs < 0;
+  const abs = Math.abs(diffMs);
+  const mins  = Math.round(abs / 60000);
+  const hours = Math.round(abs / 3600000);
+  const days  = Math.round(abs / 86400000);
+  let amount;
+  if (mins < 60) amount = `${mins} min${mins === 1 ? '' : 's'}`;
+  else if (hours < 24) amount = `${hours} hour${hours === 1 ? '' : 's'}`;
+  else amount = `${days} day${days === 1 ? '' : 's'}`;
+  return future ? `in ${amount}` : `${amount} ago`;
+}
+
+// Renders the actual refusal message prominently. For CALL_NOT_ALLOWED, the
+// underlying chat reason lives in `cause` — shown as a distinct chip so it's
+// obvious this call was blocked by the same window as chat, not a WebRTC issue.
+function showPolicyBanner(user, err) {
+  const banner  = document.getElementById('policyBanner' + user);
+  const msgEl   = document.getElementById('policyMessage' + user);
+  const chipsEl = document.getElementById('policyChips' + user);
+
+  msgEl.textContent = err.message || 'Call refused.';
+
+  const chips = [];
+  chips.push(`<span class="pb-chip">${escHtml(err.code || 'UNKNOWN')}</span>`);
+  if (err.cause) {
+    chips.push(`<span class="pb-chip pb-chip-cause">cause: ${escHtml(err.cause)}</span>`);
+  }
+  if (err.providerRole) {
+    chips.push(`<span class="pb-chip pb-chip-muted">${escHtml(err.providerRole)}</span>`);
+  }
+  if (err.windowDays !== undefined && err.windowDays !== null) {
+    chips.push(`<span class="pb-chip pb-chip-muted">${err.windowDays} day window</span>`);
+  }
+  if (err.expiresAt) {
+    const dt  = formatDateTime(err.expiresAt);
+    const rel = formatRelative(err.expiresAt);
+    chips.push(`<span class="pb-chip pb-chip-muted" title="${escHtml(err.expiresAt)}">${escHtml(dt)} (${escHtml(rel)})</span>`);
+  }
+
+  chipsEl.innerHTML = chips.join('');
+  banner.classList.add('show');
+
+  addLog(user, 'policy', `${err.code || 'POLICY_ERROR'}`, err);
+}
+
+function hidePolicyBanner(user) {
+  document.getElementById('policyBanner' + user).classList.remove('show');
+}
+
+// Central place every ack/event handler routes through. Returns true if the
+// payload was an error (and has already been rendered as a banner), so
+// callers can bail out of their normal success-path handling — in particular
+// so a refused call never proceeds to set up WebRTC state.
+function handlePossibleError(user, payload) {
+  const err = extractPolicyError(payload);
+  if (!err) return false;
+  showPolicyBanner(user, err);
+  return true;
 }
 
 function clearLog(u) {
@@ -556,6 +699,14 @@ function bindSocketEvents(u, socket) {
 
   socket.on('call_error', (data) => {
     addLog(u, 'error', 'call_error', data);
+  });
+
+  // WsPolicyExceptionFilter emits this for any client that doesn't read the
+  // ack — fire-and-forget sends still get told why the call was refused.
+  socket.on('exception', (payload) => {
+    if (!handlePossibleError(u, payload)) {
+      addLog(u, 'error', 'exception', payload);
+    }
   });
 
   socket.on('call_incoming', (data) => {
@@ -870,6 +1021,8 @@ async function initiateCall(type = 'video') {
     return;
   }
 
+  hidePolicyBanner('A');
+
   const withVideo = (type === 'video');
   const stream = await getLocalMedia('A', withVideo);
 
@@ -885,9 +1038,21 @@ async function initiateCall(type = 'video') {
       addLog('A', 'error', 'call_initiate — no ack received (server may not send one)', null);
       return;
     }
+
+    // NEW: refused by CallEligibilityService — no appointment, window expired,
+    // no accepted order, etc. Tear down the peer connection we speculatively
+    // created above; there's no call to negotiate.
+    if (handlePossibleError('A', ack)) {
+      closePeer('A');
+      setCallBadge('A', 'idle');
+      setCallDisplay('A', null);
+      document.getElementById('btnCancelA').disabled = true;
+      return;
+    }
+
     addLog('A', 'received', 'call_initiate ack', ack);
 
-    // NEW: server returned call_unreachable — callee is offline
+    // Server returned call_unreachable — callee is offline
     if (ack.event === 'call_unreachable') {
       addLog('A', 'error', 'Callee is offline — call not created', { callId: ack.callId });
       setCallBadge('A', 'unreachable');
@@ -937,6 +1102,8 @@ async function answerCall() {
   const s = sockets['B'];
   if (!s) { alert('Connect User B first'); return; }
 
+  hidePolicyBanner('B');
+
   const stream = await getLocalMedia('B', true);
 
   createPeer('B', iceServersCache);
@@ -946,9 +1113,18 @@ async function answerCall() {
   addLog('B', 'sent', 'call_join', { callId });
 
   s.emit('call_join', { callId }, (ack) => {
-    if (ack) addLog('B', 'received', 'call_join ack', ack);
+    if (!ack) return;
 
-    if (ack && ack.iceServers && pcs['B']) {
+    if (handlePossibleError('B', ack)) {
+      closePeer('B');
+      setCallBadge('B', 'idle');
+      setCallDisplay('B', null);
+      return;
+    }
+
+    addLog('B', 'received', 'call_join ack', ack);
+
+    if (ack.iceServers && pcs['B']) {
       try {
         pcs['B'].setConfiguration({ iceServers: ack.iceServers });
         addLog('B', 'webrtc', 'Updated ICE servers from ack', {

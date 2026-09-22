@@ -383,6 +383,80 @@
         padding: 24px 0;
       }
 
+      /* Policy error banner — surfaces the actual server message instead of
+         a generic string, per ChatPolicyException / WsPolicyExceptionFilter. */
+      .policy-banner {
+        display: none;
+        flex-shrink: 0;
+        margin: 0 16px;
+        margin-top: 10px;
+        padding: 10px 12px;
+        border-radius: 8px;
+        background: #2a1010;
+        border: 1px solid #5a2020;
+        animation: slideIn 0.15s ease;
+      }
+      .policy-banner.show {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+      .policy-banner .pb-head {
+        display: flex;
+        align-items: flex-start;
+        gap: 8px;
+      }
+      .policy-banner .pb-icon {
+        font-size: 14px;
+        flex-shrink: 0;
+        margin-top: 1px;
+      }
+      .policy-banner .pb-message {
+        flex: 1;
+        font-size: 12.5px;
+        line-height: 1.5;
+        color: var(--text);
+      }
+      .policy-banner .pb-close {
+        background: transparent;
+        border: none;
+        color: var(--muted);
+        font-size: 14px;
+        cursor: pointer;
+        padding: 0 2px;
+        flex-shrink: 0;
+      }
+      .policy-banner .pb-chips {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+      }
+      .pb-chip {
+        font-size: 10px;
+        font-weight: 600;
+        padding: 2px 8px;
+        border-radius: 20px;
+        background: #1a1010;
+        color: var(--error);
+        border: 1px solid #4a2020;
+        font-family: monospace;
+        letter-spacing: 0.02em;
+      }
+      .pb-chip.pb-chip-muted {
+        background: var(--surface2);
+        color: var(--muted);
+        border: 1px solid var(--border);
+      }
+
+      .event-entry.policy {
+        border-left: 3px solid var(--error);
+        background: #1e1010;
+      }
+      .tag-policy {
+        background: #2a1010;
+        color: var(--error);
+      }
+
       /* Message area */
       .send-area {
         padding: 12px 16px;
@@ -507,6 +581,15 @@
           >
         </div>
 
+        <div class="policy-banner" id="policyBannerA">
+          <div class="pb-head">
+            <span class="pb-icon">🚫</span>
+            <span class="pb-message" id="policyMessageA"></span>
+            <button class="pb-close" onclick="hidePolicyBanner('A')">✕</button>
+          </div>
+          <div class="pb-chips" id="policyChipsA"></div>
+        </div>
+
         <div class="config-section">
           <div class="field-row">
             <label>JWT Token</label>
@@ -576,6 +659,15 @@
           <span class="status-pill disconnected" id="statusB"
             >Disconnected</span
           >
+        </div>
+
+        <div class="policy-banner" id="policyBannerB">
+          <div class="pb-head">
+            <span class="pb-icon">🚫</span>
+            <span class="pb-message" id="policyMessageB"></span>
+            <button class="pb-close" onclick="hidePolicyBanner('B')">✕</button>
+          </div>
+          <div class="pb-chips" id="policyChipsB"></div>
         </div>
 
         <div class="config-section">
@@ -662,6 +754,7 @@
           error: "ERR",
           system: "SYS",
           typing: "TYPE",
+          policy: "POLICY",
         };
 
         const entry = document.createElement("div");
@@ -690,6 +783,111 @@
           .replace(/&/g, "&amp;")
           .replace(/</g, "&lt;")
           .replace(/>/g, "&gt;");
+      }
+
+      // ─── Policy errors (ChatPolicyException / WsPolicyExceptionFilter) ─────────────
+      //
+      // The gateway now throws ChatPolicyException for anything the
+      // ConversationEligibilityService refuses (no appointment, window expired,
+      // no accepted order, not a participant, ...). WsPolicyExceptionFilter
+      // forwards the full payload instead of collapsing it to a generic string,
+      // and it arrives in one of two shapes:
+      //
+      //   1. Wrapped in the emit() ack callback:
+      //        { success: false, error: { statusCode, code, message, expiresAt, ... } }
+      //   2. Flat, via the 'exception' event (fire-and-forget clients):
+      //        { statusCode, code, message, expiresAt, ... }
+      //
+      // extractPolicyError() normalizes both into the flat shape, or returns
+      // null if the payload isn't an error at all.
+      function extractPolicyError(payload) {
+        if (!payload || typeof payload !== "object") return null;
+        if (payload.success === false && payload.error) return payload.error;
+        if (payload.code && payload.message) return payload;
+        return null;
+      }
+
+      function formatDateTime(iso) {
+        if (!iso) return null;
+        const d = new Date(iso);
+        if (isNaN(d.getTime())) return iso;
+        return d.toLocaleString("en-GB", {
+          day: "numeric",
+          month: "short",
+          year: "numeric",
+          hour: "2-digit",
+          minute: "2-digit",
+        });
+      }
+
+      function formatRelative(iso) {
+        if (!iso) return null;
+        const then = new Date(iso).getTime();
+        if (isNaN(then)) return null;
+        const diffMs = Date.now() - then;
+        const future = diffMs < 0;
+        const abs = Math.abs(diffMs);
+        const mins = Math.round(abs / 60000);
+        const hours = Math.round(abs / 3600000);
+        const days = Math.round(abs / 86400000);
+
+        let amount;
+        if (mins < 60) amount = `${mins} min${mins === 1 ? "" : "s"}`;
+        else if (hours < 24) amount = `${hours} hour${hours === 1 ? "" : "s"}`;
+        else amount = `${days} day${days === 1 ? "" : "s"}`;
+
+        return future ? `in ${amount}` : `${amount} ago`;
+      }
+
+      // Renders the *actual* server message prominently, with the structured
+      // fields (code / expiresAt / windowDays / providerRole) as chips below
+      // it — this is the point of the refactor: no more guessing what a bare
+      // "Forbidden" meant.
+      function showPolicyBanner(user, err) {
+        const banner = document.getElementById("policyBanner" + user);
+        const msgEl = document.getElementById("policyMessage" + user);
+        const chipsEl = document.getElementById("policyChips" + user);
+
+        msgEl.textContent = err.message || "Request refused.";
+
+        const chips = [];
+        chips.push(`<span class="pb-chip">${escHtml(err.code || "UNKNOWN")}</span>`);
+        if (err.providerRole) {
+          chips.push(
+            `<span class="pb-chip pb-chip-muted">${escHtml(err.providerRole)}</span>`,
+          );
+        }
+        if (err.windowDays !== undefined && err.windowDays !== null) {
+          chips.push(
+            `<span class="pb-chip pb-chip-muted">${err.windowDays} day window</span>`,
+          );
+        }
+        if (err.expiresAt) {
+          const dt = formatDateTime(err.expiresAt);
+          const rel = formatRelative(err.expiresAt);
+          chips.push(
+            `<span class="pb-chip pb-chip-muted" title="${escHtml(err.expiresAt)}">${escHtml(dt)} (${escHtml(rel)})</span>`,
+          );
+        }
+
+        chipsEl.innerHTML = chips.join("");
+        banner.classList.add("show");
+
+        addLog(user, "policy", `${err.code || "POLICY_ERROR"}`, err);
+      }
+
+      function hidePolicyBanner(user) {
+        document.getElementById("policyBanner" + user).classList.remove("show");
+      }
+
+      // Central place every ack/event handler routes through. Returns true if
+      // the payload was an error (and has already been rendered), so callers
+      // can bail out of their normal success-path handling.
+      function handlePossibleError(user, payload) {
+        const err = extractPolicyError(payload);
+        if (!err) return false;
+        showPolicyBanner(user, err);
+        return true;
       }
 
       function setStatus(user, state) {
@@ -764,6 +962,14 @@
 
         socket.on("error", (data) => {
           addLog(user, "error", "Server error", data);
+        });
+
+        // WsPolicyExceptionFilter emits this for any client that doesn't
+        // read the ack — fire-and-forget sends still get told why they failed.
+        socket.on("exception", (payload) => {
+          if (!handlePossibleError(user, payload)) {
+            addLog(user, "error", "exception", payload);
+          }
         });
 
         // ── Chat events ──────────────────────────────────────────────────
@@ -845,9 +1051,12 @@
           alert("Enter a conversation ID");
           return;
         }
+        hidePolicyBanner(user);
         addLog(user, "sent", "join_conversation", { conversationId: id });
         s.emit("join_conversation", { conversationId: id }, (ack) => {
-          if (ack) addLog(user, "received", "ack: join_conversation", ack);
+          if (!ack) return;
+          if (handlePossibleError(user, ack)) return;
+          addLog(user, "received", "ack: join_conversation", ack);
         });
       }
 
@@ -861,7 +1070,9 @@
         }
         addLog(user, "sent", "leave_conversation", { conversationId: id });
         s.emit("leave_conversation", { conversationId: id }, (ack) => {
-          if (ack) addLog(user, "received", "ack: leave_conversation", ack);
+          if (!ack) return;
+          if (handlePossibleError(user, ack)) return;
+          addLog(user, "received", "ack: leave_conversation", ack);
         });
       }
 
@@ -880,10 +1091,13 @@
           return;
         }
 
+        hidePolicyBanner(user);
         const dto = { conversationId: id, content, type: "text" };
         addLog(user, "sent", "send_message", dto);
         s.emit("send_message", dto, (ack) => {
-          if (ack) addLog(user, "received", "ack: send_message", ack);
+          if (!ack) return;
+          if (handlePossibleError(user, ack)) return;
+          addLog(user, "received", "ack: send_message", ack);
         });
 
         textarea.value = "";
